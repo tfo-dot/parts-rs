@@ -1,5 +1,6 @@
+use core::fmt::Result as FmtResult;
+use core::fmt::{Debug, Formatter};
 use std::collections::HashMap;
-use std::fmt;
 
 use crate::scanner::ScannerError;
 use crate::scanner::{Token, TokenType};
@@ -18,8 +19,8 @@ pub struct ScannerRule {
     pub(crate) valid_chars: Vec<char>,
 }
 
-impl fmt::Debug for ScannerRule {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ScannerRule {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("ScannerRule")
             .field("result", &self.result)
             .field("base_rule_exists", &self.base_rule.is_some())
@@ -38,17 +39,14 @@ impl ScannerRule {
     pub fn get_default_rules() -> Vec<ScannerRule> {
         vec![
             ScannerRule {
-                result: TokenType::TokenOperator,
+                result: TokenType::Operator,
                 base_rule: None,
                 rule: None,
                 process: Some(Box::new(|mappings, runs| {
                     let token_value: String = runs.chars().collect();
 
                     if let Some(name) = mappings.get(&token_value) {
-                        return Ok(vec![Token(
-                            TokenType::TokenOperator,
-                            name.chars().collect(),
-                        )]);
+                        return Ok(vec![Token(TokenType::Operator, name.chars().collect())]);
                     }
 
                     let mut ret_tokens = Vec::new();
@@ -64,8 +62,7 @@ impl ScannerRule {
 
                         if let Some(name) = mappings.get(temp_slice) {
                             offset += temp_slice.len();
-                            ret_tokens
-                                .push(Token(TokenType::TokenOperator, name.chars().collect()));
+                            ret_tokens.push(Token(TokenType::Operator, name.chars().collect()));
                             temp_slice = &token_value[offset..];
                         } else {
                             temp_slice = &temp_slice[..temp_slice.len() - 1];
@@ -95,7 +92,6 @@ impl ScannerRule {
                     ("=", "EQUALS"),
                     ("|>", "OBJ_START"),
                     ("<|", "OBJ_END"),
-                    ("#>", "META"),
                     ("==", "EQUALITY"),
                     ("<", "LESS_THAN"),
                     (">", "MORE_THAN"),
@@ -111,7 +107,7 @@ impl ScannerRule {
                 ],
             }, // --- TokenNumber Rule ---
             ScannerRule {
-                result: TokenType::TokenNumber,
+                result: TokenType::Number,
                 base_rule: Some(Box::new(|r| *r >= '0' && *r <= '9')),
                 rule: None,
                 process: None,
@@ -121,19 +117,19 @@ impl ScannerRule {
             },
             // --- TokenKeyword Rule ---
             ScannerRule {
-                result: TokenType::TokenKeyword,
+                result: TokenType::Keyword,
                 base_rule: Some(Box::new(|r| {
                     (*r >= 'a' && *r <= 'z') || (*r >= 'A' && *r <= 'Z') || *r == '_'
                 })),
                 rule: None,
                 process: Some(Box::new(|mappings, runs| {
-                    let mut token = Token(TokenType::TokenKeyword, runs.chars().collect());
+                    let mut token = Token(TokenType::Keyword, runs.chars().collect());
                     let value_str: String = token.1.iter().collect();
 
                     if mappings.contains_key(&value_str) {
                         token.1 = value_str.to_uppercase().chars().collect();
                     } else {
-                        token.0 = TokenType::TokenIdentifier;
+                        token.0 = TokenType::Identifier;
                     }
 
                     Ok(vec![token])
@@ -165,7 +161,7 @@ impl ScannerRule {
             },
             // --- TokenSpace Rule ---
             ScannerRule {
-                result: TokenType::TokenSpace,
+                result: TokenType::Space,
                 base_rule: Some(Box::new(|r| r.is_whitespace())),
                 rule: None,
                 process: None,
@@ -175,10 +171,9 @@ impl ScannerRule {
             },
             // --- TokenString Rule ---
             ScannerRule {
-                result: TokenType::TokenString,
-                base_rule: Some(Box::new(|r| true)),
+                result: TokenType::String,
+                base_rule: Some(Box::new(|_r| true)),
                 rule: Some(Box::new(|runs| {
-                    // Keep scanning if len is 1 OR the last char doesn't match the first.
                     runs.len() == 1
                         || runs.chars().collect::<Vec<_>>().first()
                             != runs.chars().collect::<Vec<_>>().last()
@@ -193,12 +188,16 @@ impl ScannerRule {
 
                     if left_side == '"' && right_side != '"' {
                         return Err(ScannerError::UnterminatedString);
-                    } else if left_side == '`' && right_side != '`' {
+                    }
+                    
+                    if left_side == '`' && right_side != '`' {
                         return Err(ScannerError::UnterminatedString);
-                    } else if left_side != '"' && left_side != '`' {
-                        return Err(ScannerError::UnknownToken);
                     }
 
+                    if left_side != '"' && left_side != '`' {
+                        return Err(ScannerError::UnknownToken);
+                    }
+                    
                     // Get the content inside the quotes
                     let content = &runs[1..runs.len() - 1];
                     let mut unescaped = Vec::new();
@@ -229,12 +228,218 @@ impl ScannerRule {
                         }
                     }
 
-                    Ok(vec![Token(TokenType::TokenString, unescaped)])
+                    Ok(vec![Token(TokenType::String, unescaped)])
                 })),
                 skip: false,
                 mappings: HashMap::new(),
                 valid_chars: vec![],
             },
         ]
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    use crate::scanner::{Scanner};
+
+    #[test]
+    fn check_operator() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "@".to_string());
+
+        let at_token = s.get_next();
+
+        assert!(at_token.is_ok());
+        assert_eq!(
+            at_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Operator, vec!['A', 'T'])
+        );
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+        )
+    }
+
+    #[test]
+    fn check_operator_buffor() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "@+".to_string());
+
+        let at_token = s.get_next();
+
+        assert!(at_token.is_ok());
+        assert_eq!(
+            at_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Operator, vec!['A', 'T'])
+        );
+
+        let plus_token = s.get_next();
+
+        assert!(plus_token.is_ok());
+        assert_eq!(
+            plus_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Operator, vec!['P', 'L', 'U', 'S'])
+        );
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+        )
+    }
+
+    #[test]
+    fn invalid_token() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "|".to_string());
+
+        let at_token = s.get_next();
+
+        assert!(at_token.is_err_and(|e| e == ScannerError::InvalidOperator("|".to_string())));
+    }
+
+    #[test]
+    fn unknown_operator() {
+        let mut s = Scanner::new(
+            vec![ScannerRule {
+                result: TokenType::Operator,
+                base_rule: None,
+                rule: None,
+                process: Some(Box::new(|_mappings, _runs| Err(ScannerError::UnknownToken))),
+                skip: false,
+                mappings: HashMap::new(),
+                valid_chars: vec![],
+            }],
+            "x".to_string(),
+        );
+
+        let at_token = s.get_next();
+
+        assert!(at_token.is_err_and(|e| e == ScannerError::UnknownToken))
+    }
+
+    #[test]
+    fn parse_number() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "1".to_string());
+
+        let num_token = s.get_next();
+
+        assert!(num_token.is_ok());
+        assert_eq!(
+            num_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Number, vec!['1'])
+        );
+    }
+
+    #[test]
+
+    fn parse_keyword() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "false".to_string());
+
+        let false_token = s.get_next();
+
+        assert!(false_token.is_ok());
+        assert_eq!(
+            false_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Keyword, "FALSE".chars().collect::<Vec<char>>())
+        );
+    }
+
+    #[test]
+    fn parse_identifier() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "flse".to_string());
+
+        let false_token = s.get_next();
+
+        assert!(false_token.is_ok());
+        assert_eq!(
+            false_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::Identifier, "flse".chars().collect::<Vec<char>>())
+        );
+    }
+
+    #[test]
+    fn parse_space() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "  ".to_string());
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+        )
+    }
+
+    #[test]
+    fn parse_string_tick() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "``".to_string());
+
+        let string_token = s.get_next();
+
+        assert!(string_token.is_ok());
+        assert_eq!(
+            string_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::String, vec![])
+        );
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+        )
+    }
+
+    #[test]
+    fn parse_string_normal() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "\"\"".to_string());
+
+        let string_token = s.get_next();
+
+        assert!(string_token.is_ok());
+        assert_eq!(
+            string_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::String, vec![])
+        );
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+        )
+    }
+
+    #[test]
+    fn parse_string_nested() {
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "\"``\"".to_string());
+
+        let string_token = s.get_next();
+
+        assert!(string_token.is_ok());
+        assert_eq!(
+            string_token.as_ref().unwrap().to_owned(),
+            Token(TokenType::String, vec!['`', '`'])
+        );
+
+        let eof = s.get_next();
+
+        assert!(eof.is_ok());
+        assert_eq!(
+            eof.as_ref().unwrap().to_owned(),
+            Token(TokenType::Special, vec!['E', 'O', 'F'])
+ 
+       )
     }
 }
