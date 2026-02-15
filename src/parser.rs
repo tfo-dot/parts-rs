@@ -201,7 +201,7 @@ pub enum Ast {
     Set {
         name: Box<Ast>,
         value: Box<Ast>,
-    }
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,6 +224,6 @@ pub enum Value {
     String(String),
     Ref(String),
     Fun { args: Vec<String>, body: Box<Ast> },
-    Object(Vec<[Value; 2]>),
+    Object(Vec<(Value, Value)>),
     List(Vec<Value>),
 }

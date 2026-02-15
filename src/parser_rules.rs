@@ -38,7 +38,6 @@ impl ParserRule {
                     let identifier = parser.advance()?;
 
                     if identifier.0 != TokenType::Identifier {
-                        println!("{:?}", 0);
                         return Err(ParserError::TokenMismatch);
                     }
 
@@ -346,7 +345,7 @@ impl ParserRule {
                     parser.check(Token(TokenType::Operator, "OBJ_START".chars().collect()))
                 }),
                 parse: Arc::new(|parser| {
-                    let mut entries: Vec<[Value; 2]> = vec![];
+                    let mut entries: Vec<(Value, Value)> = vec![];
 
                     if !parser.match_operator("OBJ_END") {
                         loop {
@@ -370,7 +369,7 @@ impl ParserRule {
                                 return Err(ParserError::TokenMismatch);
                             }
 
-                            entries.push([key, val]);
+                            entries.push((key, val));
 
                             if !parser.match_operator("COMMA") {
                                 break;
@@ -522,7 +521,7 @@ mod tests {
         assert_eq!(val.len(), 1);
 
         if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
-            assert_eq!(inner_obj.clone(), Vec::<[Value; 2]>::new());
+            assert_eq!(inner_obj.clone(), Vec::<(Value, Value)>::new());
         } else {
             panic!(
                 "Expected Ast::Value(Value::Object) at 0, got {:?}",
@@ -543,7 +542,7 @@ mod tests {
         if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
             assert_eq!(
                 inner_obj.clone(),
-                vec![[Value::Ref("expectFalse".to_string()), Value::Bool(false)]]
+                vec![(Value::Ref("expectFalse".to_string()), Value::Bool(false))]
             );
         } else {
             panic!(
@@ -566,8 +565,8 @@ mod tests {
             assert_eq!(
                 inner_obj.clone(),
                 vec![
-                    [Value::Ref("expectFalse".to_string()), Value::Bool(false)],
-                    [Value::Ref("expectTrue".to_string()), Value::Bool(true)]
+                    (Value::Ref("expectFalse".to_string()), Value::Bool(false)),
+                    (Value::Ref("expectTrue".to_string()), Value::Bool(true))
                 ]
             );
         } else {

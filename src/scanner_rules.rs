@@ -33,7 +33,7 @@ impl Debug for ScannerRule {
     }
 }
 
-//TODO str.len() returns bytes count, str.chars() method chars, for example 0xa0 counts as 2 bytes, but one char making test fail if passed
+//TODO str.len() returns bytes count, str.chars() - chars, for example 0xa0 counts as 2 bytes, but one char is making test fail if passed in a string
 
 impl ScannerRule {
     pub fn get_default_rules() -> Vec<ScannerRule> {
