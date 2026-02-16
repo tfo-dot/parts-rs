@@ -137,6 +137,12 @@ impl Compiler {
             .expect("Compiler stack empty (no main stack)")
     }
 
+    fn next_free_address(&mut self) -> u8 {
+        let address = self.current().next_free_register;
+        self.current().next_free_register += 1;
+        return address;
+    }
+
     fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<u8>, Vec<Error>> {
         for item in ast {
             self.compile(item);
@@ -228,6 +234,10 @@ impl Compiler {
             }
             Ast::Call { what, args } => {
                 self.emit_op(OpCode::Call);
+
+                let return_adr = self.next_free_address();
+                self.emit(return_adr);
+
                 self.compile(*what);
 
                 self.emit(args.len().try_into().unwrap());
@@ -765,6 +775,7 @@ mod tests {
             res_vec,
             vec![
                 OpCode::Call as u8,
+                0,
                 OpCode::ConstString as u8,
                 0,
                 1,
