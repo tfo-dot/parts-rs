@@ -151,7 +151,7 @@ impl VM {
                 }
                 OpCode::Jump => {
                     let offset = self.read_n(2)?.try_into().unwrap();
-                    self.current()?.ip += u16::from_le_bytes(offset) as usize;
+                    self.current()?.ip = u16::from_le_bytes(offset) as usize;
                 }
                 OpCode::JumpIf => {
                     let jump_condition = self.read_byte()? as usize;
@@ -177,6 +177,23 @@ impl VM {
                     let offset = self.read_n(2)?.try_into().unwrap();
                     self.current()?.ip -= u16::from_le_bytes(offset) as usize;
                 }
+                OpCode::Binary => {
+                    let op = self.read_byte()? as usize;
+
+                    let dest = self.read_byte()? as usize;
+
+                    let left_reg = self.read_byte()? as usize;
+                    let right_reg = self.read_byte()? as usize;
+
+                    let current_frame = self.current().unwrap();
+
+                    let left = current_frame.registers[left_reg].clone();
+                    let right = current_frame.registers[right_reg].clone();
+
+                    let res = Self::binary(op, left, right);
+
+                    current_frame.registers[dest] = res
+                }
                 _ => todo!(),
             }
         }
@@ -191,9 +208,24 @@ impl VM {
             Value::Bool(raw) => raw,
             Value::String(raw) => raw.len() > 0,
             //TODO check if it's true XD
-            Value::Ref(_raw) => unreachable!(),
+            Value::Ref(_) | Value::Hash(_) => unreachable!(),
             Value::Fun { arity: _, body: _ } => true,
             Value::Object(items) => items.len() > 0,
+        }
+    }
+
+    pub fn binary(op_type: usize, left: Value, right: Value) -> Value {
+        match op_type {
+            0 => (left + right).expect("Unexpected error"),
+            1 => (left - right).expect("Unexpected error"),
+            2 => (left * right).expect("Unexpected error"),
+            3 => (left / right).expect("Unexpected error"),
+            4 => Value::Bool(left == right),
+            5 => Value::Bool(left > right),
+            6 => Value::Bool(left < right),
+            7 => (left % right).expect("Unexpected error"),
+
+            _ => panic!("UnexpectedType"),
         }
     }
 }
@@ -291,7 +323,7 @@ mod tests {
         assert!(res.is_ok_and(|val| val.is_some_and(|deep| deep == Value::Bool(true))))
     }
 
-        #[test]
+    #[test]
     fn check_call_one_arg() {
         //[load @ 0 cosnt @ 0], [Call, return @ 1, func @ 0, 1 arg], [return @ 1]
         let code = vec![
@@ -314,10 +346,7 @@ mod tests {
 
         let constants = vec![Value::Fun {
             arity: 0,
-            body: vec![
-                OpCode::Return as u8,
-                0,
-            ],
+            body: vec![OpCode::Return as u8, 0],
         }];
 
         let mut vm = VM::new(code, constants);
@@ -325,5 +354,49 @@ mod tests {
         let res = vm.run();
 
         assert!(res.is_ok_and(|val| val.is_some_and(|deep| deep == Value::Bool(false))))
+    }
+
+    #[test]
+    fn check_test_binary() {
+        let code = vec![
+            OpCode::Load as u8,
+            0,
+            OpCode::ConstInt as u8,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            OpCode::Load as u8,
+            1,
+            OpCode::ConstInt as u8,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            OpCode::Binary as u8,
+            0,
+            2,
+            0,
+            1,
+            OpCode::Return as u8,
+            2,
+        ];
+
+        let constants = vec![];
+
+        let mut vm = VM::new(code, constants);
+
+        assert!(
+            vm.run()
+                .is_ok_and(|val| val.is_some_and(|deep| deep == Value::Int(2)))
+        )
     }
 }
