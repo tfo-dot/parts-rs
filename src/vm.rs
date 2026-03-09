@@ -11,6 +11,8 @@ struct Frame {
 #[non_exhaustive]
 pub enum Error {
     FrameUnderflow,
+    UnexpectedTypeLoad(OpCode),
+    UnexpectedTypeCall,
     UnexpectedType,
 }
 
@@ -96,7 +98,12 @@ impl VM {
                             let byte = self.read_byte()? as usize;
                             self.current()?.registers[dest] = self.constants[byte].clone();
                         }
-                        _ => return Err(Error::UnexpectedType),
+                        OpCode::ConstReg => {
+                            let byte = self.read_byte()? as usize;
+                            self.current()?.registers[dest] =
+                                self.current()?.registers[byte].clone();
+                        }
+                        _ => return Err(Error::UnexpectedTypeLoad(value_type)),
                     }
                 }
                 OpCode::Return => {
@@ -121,7 +128,8 @@ impl VM {
                 | OpCode::ConstString
                 | OpCode::ConstRef
                 | OpCode::ConstFun
-                | OpCode::ConstObj => return Err(Error::UnexpectedType),
+                | OpCode::ConstObj
+                | OpCode::ConstReg => return Err(Error::UnexpectedType),
                 OpCode::Call => {
                     let dest_reg = self.read_byte()?;
                     let fun_reg = self.read_byte()?;
@@ -146,7 +154,7 @@ impl VM {
 
                         self.frames.push(new_frame);
                     } else {
-                        return Err(Error::UnexpectedType);
+                        return Err(Error::UnexpectedTypeCall);
                     }
                 }
                 OpCode::Jump => {
@@ -194,6 +202,7 @@ impl VM {
 
                     current_frame.registers[dest] = res
                 }
+                OpCode::GetProperty => {}
                 _ => todo!(),
             }
         }
@@ -225,7 +234,7 @@ impl VM {
             6 => Value::Bool(left < right),
             7 => (left % right).expect("Unexpected error"),
 
-            _ => panic!("UnexpectedType"),
+            _ => panic!("UnexpectedType bin"),
         }
     }
 }

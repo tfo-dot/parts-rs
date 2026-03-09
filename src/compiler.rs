@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 
-use crate::{define_opcodes, impl_binary_op, impl_compare_op};
 use crate::parser::Ast;
 use crate::parser::Value as ParserValue;
+use crate::{define_opcodes, impl_binary_op, impl_compare_op};
 
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -27,6 +28,7 @@ define_opcodes! {
     ConstRef    = 0x04,
     ConstFun    = 0x05,
     ConstObj    = 0x06,
+    ConstReg    = 0x07,
 
     // Flow Control
     Return      = 0x10,
@@ -37,7 +39,7 @@ define_opcodes! {
     JumpNot     = 0x15,
     JumpBack    = 0x16,
 
-    //Movement
+    //Register movements
     Load        = 0x20,
     GetProperty = 0x21,
     SetProperty = 0x22,
@@ -101,7 +103,7 @@ impl Context {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Double(f64),
@@ -109,7 +111,7 @@ pub enum Value {
     String(String),
     Ref(String),
     Fun { arity: u8, body: Vec<u8> },
-    Object(Vec<(u64, Vec<u8>)>),
+    Object(HashMap<u64, Vec<u8>>),
     Hash(u64),
 }
 
@@ -161,10 +163,7 @@ impl Rem for Value {
                     Ok(Value::Int(a % b))
                 }
             }
-            (l, r) => Err(format!(
-                "operation not supported - mod ({:?}, {:?})", 
-                l, r
-            )),
+            (l, r) => Err(format!("operation not supported - mod ({:?}, {:?})", l, r)),
         }
     }
 }
@@ -202,16 +201,44 @@ impl Value {
     }
 }
 
-struct Compiler {
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        return match (self, other) {
+            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+            (Value::Int(a), Value::Double(b)) => (*a as f64).partial_cmp(b),
+            (Value::Double(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
+            (Value::Double(a), Value::Double(b)) => a.partial_cmp(b),
+            (Value::String(a), Value::String(b)) => a.partial_cmp(b),
+            _ => Some(std::cmp::Ordering::Equal),
+        };
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Double(d) => write!(f, "{}", d),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::String(s) => write!(f, "\"{}\"", s), // Quoted for clarity
+            Value::Ref(r) => write!(f, "&{}", r),       // Prefixed with & to show it's a ref
+            Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
+            Value::Object(obj) => write!(f, "<object: {} keys>", obj.len()),
+            Value::Hash(h) => write!(f, "#{}", h),
+        }
+    }
+}
+
+pub struct Compiler {
     pub errors: Vec<Error>,
     pub had_error: bool,
 
-    constant_pool: Vec<Value>,
+    pub constant_pool: Vec<Value>,
     contexts: Vec<Context>,
 }
 
 impl Compiler {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             contexts: vec![Context::new()],
             constant_pool: vec![],
@@ -232,7 +259,7 @@ impl Compiler {
         return address;
     }
 
-    fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<u8>, Vec<Error>> {
+    pub fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<u8>, Vec<Error>> {
         for item in ast {
             self.compile(item);
         }
@@ -546,15 +573,21 @@ impl Compiler {
 
                         let reg = dest.unwrap_or_else(|| self.current().add_local(name));
 
-                        self.emit_op(OpCode::Load);
-                        self.emit(reg);
-
                         if let Ast::Value(raw) = *value {
+                            self.emit_op(OpCode::Load);
+                            self.emit(reg);
+
                             self.compile_const(raw);
                         } else {
-                            panic!("Non value passed as value")
-                        }
+                            let res = self.compile(*value);
 
+                            self.emit_op(OpCode::Load);
+                            self.emit(reg);
+
+                            self.emit_op(OpCode::ConstReg);
+
+                            self.emit(res);
+                        }
                         0
                     }
                     _ => panic!("WrongType"),
@@ -648,7 +681,7 @@ impl Compiler {
             ParserValue::Object(entries) => {
                 self.contexts.push(Context::new());
 
-                let mut entries_compiled = vec![];
+                let mut entries_compiled = HashMap::new();
 
                 for (key, value) in entries {
                     self.current().bytecode.clear();
@@ -661,7 +694,7 @@ impl Compiler {
 
                     let converted = self.convert_const(key);
 
-                    entries_compiled.push((converted.get_hash(), value_vec));
+                    entries_compiled.insert(converted.get_hash(), value_vec);
                 }
 
                 self.contexts.pop();
@@ -682,6 +715,8 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::compiler::{OpCode, Value};
     use crate::parser::Ast;
     use crate::parser::Value as ParserValue;
@@ -1170,9 +1205,8 @@ mod tests {
             body: (Box::new(Ast::ContinueCode)),
         }]);
 
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![   
+        assert!(res.clone().is_ok_and(|out| out
+            == vec![
                 OpCode::Load as u8,
                 0,
                 OpCode::ConstBool as u8,
@@ -1186,8 +1220,8 @@ mod tests {
                 0,
                 OpCode::JumpBack as u8,
                 14,
-                0])
-        );
+                0
+            ]));
     }
     #[test]
 
@@ -1254,23 +1288,13 @@ mod tests {
                 .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
         );
 
-        let obj = c.constant_pool.get(0);
+        let obj = c.constant_pool.get(0).expect("Expected actual value");
 
-        let entries = match obj {
-            Some(Value::Object(entries)) => entries.clone(),
-            None => {
-                assert!(false, "object definition not found");
-                vec![]
-            }
-            _ => panic!(),
-        };
+        let mut expected = HashMap::new();
 
-        assert!(entries.len() == 1);
+        expected.insert(Value::Int(100).get_hash(), vec![OpCode::ConstBool as u8, 0]);
 
-        assert_eq!(
-            entries[0],
-            (Value::Int(100).get_hash(), vec![OpCode::ConstBool as u8, 0])
-        );
+        assert_eq!(*obj, Value::Object(expected));
     }
 
     #[test]
@@ -1309,27 +1333,17 @@ mod tests {
                 .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
         );
 
-        let obj = c.constant_pool.get(0);
+        let obj = c.constant_pool.get(0).expect("Expected valid value");
 
-        let entries = match obj {
-            Some(Value::Object(entries)) => entries.clone(),
-            None => {
-                assert!(false, "object definition not found");
-                vec![]
-            }
-            _ => todo!(),
-        };
+        let mut expected = HashMap::new();
 
-        assert_eq!(
-            entries,
-            vec![
-                (
-                    Value::Int(0).get_hash(),
-                    vec![OpCode::ConstInt as u8, 100, 0, 0, 0, 0, 0, 0, 0]
-                ),
-                (Value::Int(1).get_hash(), vec![OpCode::ConstBool as u8, 0])
-            ]
+        expected.insert(
+            Value::Int(0).get_hash(),
+            vec![OpCode::ConstInt as u8, 100, 0, 0, 0, 0, 0, 0, 0],
         );
+        expected.insert(Value::Int(1).get_hash(), vec![OpCode::ConstBool as u8, 0]);
+
+        assert_eq!(*obj, Value::Object(expected));
     }
 
     #[test]

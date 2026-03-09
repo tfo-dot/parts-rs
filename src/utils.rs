@@ -28,19 +28,15 @@ macro_rules! impl_binary_op {
 
             fn $method(self, rhs: Self) -> Self::Output {
                 match (self, rhs) {
-                    // Ref Check (from your Go code)
                     (Value::Ref(_), _) | (_, Value::Ref(_)) => 
                         Err("got reference, expected value".to_string()),
 
-                    // Numeric Math
                     (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a $op b)),
                     (Value::Double(a), Value::Double(b)) => Ok(Value::Double(a $op b)),
                     
-                    // Numeric Promotion
                     (Value::Int(a), Value::Double(b)) => Ok(Value::Double(a as f64 $op b)),
                     (Value::Double(a), Value::Int(b)) => Ok(Value::Double(a $op b as f64)),
 
-                    // Booleans as 0/1 (from your Go code)
                     (Value::Int(a), Value::Bool(b)) => Ok(Value::Int(a $op (if b { 1 } else { 0 }))),
                     (Value::Bool(a), Value::Int(b)) => Ok(Value::Int((if a { 1 } else { 0 }) $op b)),
 
