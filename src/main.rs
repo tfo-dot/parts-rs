@@ -1,5 +1,5 @@
 use clap::Parser;
-use parts_rs::{compiler::Compiler, parser::Parser as Partser, vm::VM};
+use parts_rs::{compiler::Compiler, disassemble, parser::Parser as Partser, vm::VM};
 use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
@@ -32,6 +32,7 @@ fn main() {
         for stmt in &ast {
             println!("{:?}", stmt);
         }
+
         println!();
     }
 
@@ -40,7 +41,19 @@ fn main() {
     let bc = c.compile_all(ast).expect("Got error cmp lol");
 
     if cli.debug {
-        println!("Bytecode: {:?}\n", bc)
+        println!("Bytecode: {:?}\n", bc);
+
+        println!("Consts:");
+
+        for constant in &c.constant_pool {
+            println!("{:?}", constant);
+        }
+
+        println!();
+
+        disassemble::disassemble(&bc, &c.constant_pool);
+
+        println!();
     }
 
     let mut vm = VM::new(bc, c.constant_pool);

@@ -212,7 +212,10 @@ impl ParserRule {
                             break;
                         }
 
-                        body.push(parser.parse()?);
+                        let temp = parser.parse()?;
+                        if temp != Ast::Ignore {
+                            body.push(temp);
+                        }
                     }
 
                     if !parser.match_operator("RIGHT_BRACE") {

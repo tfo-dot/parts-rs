@@ -35,14 +35,16 @@ define_opcodes! {
     Call        = 0x11,
     Binary      = 0x12,
     Jump        = 0x13,
-    JumpIf      = 0x14,
-    JumpNot     = 0x15,
-    JumpBack    = 0x16,
+    JumpBy      = 0x14,
+    JumpIf      = 0x15,
+    JumpNot     = 0x16,
+    JumpBack    = 0x17,
 
     //Register movements
     Load        = 0x20,
     GetProperty = 0x21,
     SetProperty = 0x22,
+    LoadNative = 0x23,
 }
 
 struct LoopContext {
@@ -103,6 +105,8 @@ impl Context {
     }
 }
 
+pub type NativeFn = fn(args: Vec<Value>) -> Result<Value, String>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
@@ -111,8 +115,55 @@ pub enum Value {
     String(String),
     Ref(String),
     Fun { arity: u8, body: Vec<u8> },
-    Object(HashMap<u64, Vec<u8>>),
+    NativeFun(NativeFunction),
+    Object(HashMap<u64, Value>),
     Hash(u64),
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeFunction {
+    pub name: &'static str,
+    pub arity: u8,
+    pub call: NativeFn,
+}
+
+impl PartialEq for NativeFunction {
+    fn eq(&self, other: &Self) -> bool {
+        // We compare the name and arity, not the function pointer address.
+        self.name == other.name && self.arity == other.arity
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct NativeFunctionDef {
+    pub name: &'static str,
+    pub arity: u8,
+}
+
+#[derive(Clone)]
+pub struct StdDefinition {
+    pub functions: Vec<NativeFunctionDef>,
+}
+
+impl StdDefinition {
+    pub fn get_core() -> Self {
+        use crate::vm::StdModule;
+
+        return StdDefinition {
+            functions: {
+                StdModule::get_core()
+                    .functions
+                    .iter()
+                    .map(|f| {
+                        return NativeFunctionDef {
+                            name: f.name,
+                            arity: f.arity,
+                        };
+                    })
+                    .collect()
+            },
+        };
+    }
 }
 
 use std::hash::{Hash, Hasher};
@@ -136,7 +187,7 @@ impl Hash for Value {
                 state.write_u8(3);
                 s.hash(state);
             }
-            Value::Object(_) | Value::Fun { .. } => {
+            Value::Object(_) | Value::Fun { .. } | Value::NativeFun(_) => {
                 state.write_u8(4);
                 let ptr = self as *const _ as usize;
                 ptr.hash(state);
@@ -223,6 +274,7 @@ impl Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s), // Quoted for clarity
             Value::Ref(r) => write!(f, "&{}", r),       // Prefixed with & to show it's a ref
             Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
+            Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.len()),
             Value::Hash(h) => write!(f, "#{}", h),
         }
@@ -235,6 +287,7 @@ pub struct Compiler {
 
     pub constant_pool: Vec<Value>,
     contexts: Vec<Context>,
+    std: StdDefinition,
 }
 
 impl Compiler {
@@ -244,6 +297,7 @@ impl Compiler {
             constant_pool: vec![],
             errors: vec![],
             had_error: false,
+            std: StdDefinition::get_core(),
         }
     }
 
@@ -329,7 +383,15 @@ impl Compiler {
             ParserValue::Double(_) => self.emit_op(OpCode::ConstDouble),
             ParserValue::Bool(_) => self.emit_op(OpCode::ConstBool),
             ParserValue::String(_) => self.emit_op(OpCode::ConstString),
-            ParserValue::Ref(_) => self.emit_op(OpCode::ConstRef),
+            ParserValue::Ref(ref name) => {
+                if let Some(reg) = self.current().resolve_local(name) {
+                    self.emit_op(OpCode::ConstReg);
+                    self.emit(reg);
+                    return;
+                }
+
+                self.emit_op(OpCode::ConstRef);
+            }
             ParserValue::Fun { .. } => self.emit_op(OpCode::ConstFun),
             ParserValue::Object(_) | ParserValue::List(_) => self.emit_op(OpCode::ConstObj),
         };
@@ -348,18 +410,35 @@ impl Compiler {
             Value::Bool(b) => vec![b as u8],
             Value::Ref(r) => {
                 let mut register: Option<&u8> = None;
+                let std = self.std.clone();
 
                 for scope in &self.current().scopes {
                     if scope.contains_key(&r) {
-                        //TODO fix it so it works cross context
                         register = Some(scope.get(&r).unwrap());
                         break;
                     }
                 }
 
+                if let Some(_std_func) = std.functions.iter().find(|f| f.name == r) {
+                    let reg = self.next_free_address();
+
+                    let hash = Value::Hash(Value::String(r).get_hash());
+
+                    let idx = match self.constant_pool.iter().position(|c| *c == hash) {
+                        Some(hash_idx) => hash_idx,
+                        None => {
+                            self.constant_pool.push(hash);
+
+                            self.constant_pool.len() - 1
+                        }
+                    };
+
+                    return vec![OpCode::LoadNative as u8, reg, idx as u8];
+                }
+
                 let reg = match register {
                     Some(reg) => *reg,
-                    None => panic!("UndefinedResolve"),
+                    None => panic!("UndefinedResolve - {}", r),
                 };
 
                 vec![reg]
@@ -367,6 +446,7 @@ impl Compiler {
             Value::Fun { arity: _, body: _ }
             | Value::Object(_)
             | Value::String(_)
+            | Value::NativeFun(_)
             | Value::Hash(_) => match self.constant_pool.iter().position(|x| x == &value) {
                 Some(expr) => vec![expr as u8],
                 None => {
@@ -382,14 +462,23 @@ impl Compiler {
             Ast::Declare { name, value } => {
                 let address = self.current().add_local(name);
 
-                self.emit_op(OpCode::Load);
-                self.emit(address);
+                match *value {
+                    Ast::Value(raw) => {
+                        self.emit_op(OpCode::Load);
+                        self.emit(address);
 
-                if let Ast::Value(raw) = *value {
-                    self.compile_const(raw);
-                } else {
-                    panic!("Non value passed as value")
-                }
+                        self.compile_const(raw);
+                    }
+                    _ => {
+                        let dest = self.compile(*value);
+
+                        self.emit_op(OpCode::Load);
+                        self.emit(address);
+
+                        self.emit_op(OpCode::ConstReg);
+                        self.emit(dest);
+                    }
+                };
 
                 address
             }
@@ -399,6 +488,24 @@ impl Compiler {
 
                     if reg.is_some() {
                         return reg.unwrap();
+                    }
+
+                    if let Some(_std_func) = self.std.functions.iter().find(|f| f.name == ref_val) {
+                        let reg = self.next_free_address();
+
+                        let hash = Value::Hash(Value::String(ref_val.to_string()).get_hash());
+
+                        let idx = match self.constant_pool.iter().position(|c| *c == hash) {
+                            Some(hash_idx) => hash_idx,
+                            None => {
+                                self.constant_pool.push(hash);
+
+                                self.constant_pool.len() - 1
+                            }
+                        };
+
+                        self.emit_vec(vec![OpCode::LoadNative as u8, reg, idx as u8]);
+                        return reg as u8;
                     }
                 }
 
@@ -485,12 +592,9 @@ impl Compiler {
                     self.patch_jump(pos);
                 }
 
-                {
-                    let pos = self.emit_jump_op(OpCode::Jump);
-                    match else_branch {
-                        None => 0,
-                        Some(ast) => self.compile(*ast),
-                    };
+                if else_branch.is_some() {
+                    let pos = self.emit_jump_op(OpCode::JumpBy);
+                    self.compile(*else_branch.unwrap());
                     self.patch_jump(pos);
                 }
 
@@ -547,20 +651,30 @@ impl Compiler {
             }
 
             Ast::Dot { accessor, access } => {
+                if let Ast::Set { name, value } = *access {
+                    return self.compile(Ast::Set {
+                        name: Box::new(Ast::Dot {
+                            accessor: accessor,
+                            access: name,
+                        }),
+                        value: value,
+                    });
+                }
                 self.emit_op(OpCode::GetProperty);
                 let reg = self.next_free_address();
                 self.emit(reg);
-                self.compile(*accessor);
 
                 if let Ast::Value(val) = *access {
+                    let accessor = self.compile(*accessor);
+                    self.emit(accessor);
                     let converted = self.convert_const(val);
                     let access = converted.get_hash();
 
                     self.constant_pool.push(Value::Hash(access));
 
-                    self.emit((self.constant_pool.len() - 1) as u8)
+                    self.emit((self.constant_pool.len() - 1) as u8);
                 } else {
-                    panic!("Unexpected value");
+                    panic!("Unexpected type as value")
                 }
 
                 reg
@@ -684,17 +798,10 @@ impl Compiler {
                 let mut entries_compiled = HashMap::new();
 
                 for (key, value) in entries {
-                    self.current().bytecode.clear();
-
-                    self.compile_const(value);
-
-                    let value_vec = self.current().bytecode.clone();
-
-                    self.current().bytecode.clear();
-
                     let converted = self.convert_const(key);
+                    let val = self.convert_const(value);
 
-                    entries_compiled.insert(converted.get_hash(), value_vec);
+                    entries_compiled.insert(converted.get_hash(), val);
                 }
 
                 self.contexts.pop();
@@ -1292,7 +1399,7 @@ mod tests {
 
         let mut expected = HashMap::new();
 
-        expected.insert(Value::Int(100).get_hash(), vec![OpCode::ConstBool as u8, 0]);
+        expected.insert(Value::Int(100).get_hash(), Value::Bool(false));
 
         assert_eq!(*obj, Value::Object(expected));
     }
@@ -1337,11 +1444,8 @@ mod tests {
 
         let mut expected = HashMap::new();
 
-        expected.insert(
-            Value::Int(0).get_hash(),
-            vec![OpCode::ConstInt as u8, 100, 0, 0, 0, 0, 0, 0, 0],
-        );
-        expected.insert(Value::Int(1).get_hash(), vec![OpCode::ConstBool as u8, 0]);
+        expected.insert(Value::Int(0).get_hash(), Value::Int(100));
+        expected.insert(Value::Int(1).get_hash(), Value::Bool(false));
 
         assert_eq!(*obj, Value::Object(expected));
     }

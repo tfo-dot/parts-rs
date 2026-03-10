@@ -1,0 +1,5 @@
+let x(y) = {
+	return y + 2;
+}
+
+return x(2)

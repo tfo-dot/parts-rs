@@ -1,0 +1,9 @@
+let start_time = timestamp();
+
+let elapsed = timestamp() - start_time;
+
+println(elapsed);
+
+if elapsed < 1 {
+	println("Parts is blazingly fast")
+}

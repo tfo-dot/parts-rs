@@ -1,5 +1,46 @@
-use crate::compiler::{OpCode, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::compiler::{NativeFunction, OpCode, Value};
+
+#[derive(Clone)]
+pub struct StdModule {
+    pub functions: Vec<NativeFunction>,
+}
+
+impl StdModule {
+    pub fn get_core() -> Self {
+        Self {
+            functions: vec![
+                NativeFunction {
+                    name: "println",
+                    arity: 1,
+                    call: |args| {
+                        for arg in args {
+                            print!("{}", arg)
+                        }
+                        println!();
+
+                        Ok(Value::Bool(true))
+                    },
+                },
+                NativeFunction {
+                    name: "timestamp",
+                    arity: 0,
+                    call: |_| {
+                        let ts = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_micros();
+
+                        Ok(Value::Int(ts as i64))
+                    },
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Frame {
     registers: [Value; 256],
     ip: usize,
@@ -16,6 +57,7 @@ pub enum Error {
     UnexpectedType,
 }
 
+#[derive(Clone)]
 pub struct VM {
     frames: Vec<Frame>,
     constants: Vec<Value>,
@@ -95,6 +137,7 @@ impl VM {
                         | OpCode::ConstRef
                         | OpCode::ConstFun
                         | OpCode::ConstObj => {
+                            println!("FFFFFFFFFF {:?}", opcode);
                             let byte = self.read_byte()? as usize;
                             self.current()?.registers[dest] = self.constants[byte].clone();
                         }
@@ -138,36 +181,58 @@ impl VM {
 
                     let func_val = self.current()?.registers[fun_reg as usize].clone();
 
-                    if let Value::Fun { arity: _, body } = func_val {
-                        let mut new_frame = Frame {
-                            registers: [const { Value::Int(0) }; 256],
-                            ip: 0,
-                            bytecode: body,
-                            return_reg: dest_reg,
-                        };
+                    match func_val {
+                        Value::Fun { arity: _, body } => {
+                            let mut new_frame = Frame {
+                                registers: [const { Value::Int(0) }; 256],
+                                ip: 0,
+                                bytecode: body,
+                                return_reg: dest_reg,
+                            };
 
-                        for i in 0..arg_count {
-                            let idx = self.read_byte()? as usize;
-                            new_frame.registers[i as usize] =
-                                self.current()?.registers[idx].clone();
+                            for i in 0..arg_count {
+                                let idx = self.read_byte()? as usize;
+                                new_frame.registers[i as usize] =
+                                    self.current()?.registers[idx].clone();
+                            }
+
+                            self.frames.push(new_frame);
                         }
+                        Value::NativeFun(native_fn) => {
+                            let mut args = Vec::new();
+                            for _ in 0..arg_count {
+                                let arg_reg = self.read_byte()? as usize;
+                                args.push(self.current()?.registers[arg_reg].clone());
+                            }
 
-                        self.frames.push(new_frame);
-                    } else {
-                        return Err(Error::UnexpectedTypeCall);
+                            // Execute the Rust function
+                            let result =
+                                (native_fn.call)(args).map_err(|_| Error::UnexpectedTypeCall)?;
+
+                            // Store result in the destination register
+                            self.current()?.registers[dest_reg as usize] = result;
+                        }
+                        _ =>{
+                            println!("{:?}", func_val);
+                         return Err(Error::UnexpectedTypeCall)
+                    }
                     }
                 }
                 OpCode::Jump => {
                     let offset = self.read_n(2)?.try_into().unwrap();
                     self.current()?.ip = u16::from_le_bytes(offset) as usize;
                 }
+                OpCode::JumpBy => {
+                    let offset = self.read_n(2)?.try_into().unwrap();
+                    self.current()?.ip += u16::from_le_bytes(offset) as usize;
+                }
                 OpCode::JumpIf => {
                     let jump_condition = self.read_byte()? as usize;
 
                     let cond_value = self.current()?.registers[jump_condition].clone();
+                    let offset = self.read_n(2)?.try_into().unwrap();
 
                     if Self::is_truthy(cond_value) {
-                        let offset = self.read_n(2)?.try_into().unwrap();
                         self.current()?.ip += u16::from_le_bytes(offset) as usize;
                     }
                 }
@@ -176,8 +241,9 @@ impl VM {
 
                     let cond_value = self.current()?.registers[jump_condition].clone();
 
+                    let offset = self.read_n(2)?.try_into().unwrap();
+
                     if !Self::is_truthy(cond_value) {
-                        let offset = self.read_n(2)?.try_into().unwrap();
                         self.current()?.ip += u16::from_le_bytes(offset) as usize;
                     }
                 }
@@ -202,8 +268,60 @@ impl VM {
 
                     current_frame.registers[dest] = res
                 }
-                OpCode::GetProperty => {}
-                _ => todo!(),
+                OpCode::GetProperty => {
+                    let dest = self.read_byte()? as usize;
+
+                    let src_idx = self.read_byte()? as usize;
+
+                    let idx = self.read_byte()? as usize;
+
+                    let hash = match self.constants.get(idx) {
+                        Some(Value::Hash(h)) => *h,
+                        _ => panic!("Expected hash constant at index {}", idx),
+                    };
+
+                    if let Value::Object(entries) = &self.current()?.registers[src_idx] {
+                        let value = entries.get(&hash).cloned().expect("No object found");
+                        self.current()?.registers[dest] = value;
+                    }
+                }
+                OpCode::SetProperty => {
+                    let obj_idx = self.read_byte()? as usize;
+                    let const_idx = self.read_byte()? as usize;
+                    let val_idx = self.read_byte()? as usize;
+
+                    let hash = match self.constants.get(const_idx) {
+                        Some(Value::Hash(h)) => *h,
+                        _ => panic!("Expected hash constant"),
+                    };
+
+                    let new_val = self.current()?.registers[val_idx].clone();
+
+                    // Mutate the object in the register
+                    if let Value::Object(entries) = &mut self.current()?.registers[obj_idx] {
+                        entries.insert(hash, new_val);
+                    }
+                }
+                OpCode::LoadNative => {
+                    let dest = self.read_byte()? as usize;
+                    let hash_idx = self.read_byte()? as usize;
+
+                    let hash = match self.constants.get(hash_idx) {
+                        Some(Value::Hash(h)) => Value::Hash(*h),
+                        _ => panic!("Expected hash constant"),
+                    };
+
+                    self.current()?.registers[dest] = Value::NativeFun(
+                        StdModule::get_core()
+                            .functions
+                            .iter()
+                            .find(|f| {
+                                Value::Hash(Value::String(f.name.to_string()).get_hash()) == hash
+                            })
+                            .unwrap()
+                            .clone(),
+                    );
+                }
             }
         }
 
@@ -218,7 +336,8 @@ impl VM {
             Value::String(raw) => raw.len() > 0,
             //TODO check if it's true XD
             Value::Ref(_) | Value::Hash(_) => unreachable!(),
-            Value::Fun { arity: _, body: _ } => true,
+            Value::Fun { .. } => true,
+            Value::NativeFun(_) => true,
             Value::Object(items) => items.len() > 0,
         }
     }

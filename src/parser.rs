@@ -205,6 +205,13 @@ pub enum Ast {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum ImportType {
+    Regular,
+    Syntax,
+    Translation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOperator {
     Add,
     Minus,
