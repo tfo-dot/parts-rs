@@ -153,6 +153,7 @@ impl ScannerRule {
                     ("break", ""),
                     ("continue", ""),
                     ("translation", ""),
+                    ("in","")
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

@@ -191,6 +191,11 @@ pub enum Ast {
         condition: Box<Ast>,
         body: Box<Ast>,
     },
+    ForEach {
+        iterable: Box<Ast>,
+        var_name: String,
+        body: Box<Ast>
+    },
     Block {
         code: Vec<Ast>,
     },

@@ -186,12 +186,29 @@ impl ParserRule {
                 }),
                 parse: Arc::new(|parser| {
                     let condition = parser.parse()?;
-                    let body = parser.parse()?;
 
-                    Ok(Ast::For {
-                        condition: Box::new(condition),
-                        body: Box::new(body),
-                    })
+                    return if parser.match_keyword("IN") {
+                        return if let Ast::Value(Value::Ref(ref ref_val)) = condition {
+                            let iter = parser.parse()?;
+
+                            let body = parser.parse()?;
+
+                            Ok(Ast::ForEach {
+                                iterable: Box::new(iter),
+                                var_name: ref_val.to_string(),
+                                body: Box::new(body),
+                            })
+                        } else {
+                            return Err(ParserError::TokenMismatch);
+                        };
+                    } else {
+                        let body = parser.parse()?;
+
+                        Ok(Ast::For {
+                            condition: Box::new(condition),
+                            body: Box::new(body),
+                        })
+                    };
                 }),
             },
             ParserRule {
@@ -768,6 +785,26 @@ mod tests {
                 body: Box::new(Ast::Return {
                     value: Box::new(Ast::Value(Value::Int(0)))
                 })
+            }]
+        );
+    }
+
+    #[test]
+    fn test_for_each() {
+        let mut p = Parser::new("for x in y { return 0 }".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::ForEach {
+                body: Box::new(Ast::Block {
+                    code: vec![Ast::Return {
+                        value: Box::new(Ast::Value(Value::Int(0)))
+                    }]
+                }),
+                iterable: Box::new(Ast::Value(Value::Ref("y".to_string()))),
+                var_name: "x".to_string()
             }]
         );
     }

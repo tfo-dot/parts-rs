@@ -1,0 +1,5 @@
+let x = |> file: "*.pts", index: 0, alive: true <|
+
+for item in x {
+	println(item)
+}

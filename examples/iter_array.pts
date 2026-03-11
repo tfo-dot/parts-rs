@@ -1,0 +1,9 @@
+let x = [10, 5, 0]
+
+let iter = iter_of(x);
+
+for has_next(iter) {
+	let item = get_next(iter);
+
+	println(item)
+}

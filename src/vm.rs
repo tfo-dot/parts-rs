@@ -1,4 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::compiler::{NativeFunction, OpCode, Value};
 
@@ -33,6 +38,105 @@ impl StdModule {
                             .as_micros();
 
                         Ok(Value::Int(ts as i64))
+                    },
+                },
+                NativeFunction {
+                    name: "iter_of",
+                    arity: 1,
+                    call: |args| {
+                        return match &args[0] {
+                            Value::String(_) => todo!(),
+                            Value::Object(map) => {
+                                let mut hash_map = HashMap::new();
+
+                                hash_map.insert(
+                                    Value::String("data".to_string()).get_hash(),
+                                    Value::Object(map.clone()),
+                                );
+
+                                hash_map.insert(
+                                    Value::String("index".to_string()).get_hash(),
+                                    Value::Int(0),
+                                );
+
+                                Ok(Value::Object(Rc::new(RefCell::new(hash_map))))
+                            }
+                            _ => Err("UnexpectedType, only object/strings".to_string()),
+                        };
+                    },
+                },
+                NativeFunction {
+                    name: "get_next",
+                    arity: 1,
+                    call: |args| {
+                        if let Value::Object(obj_ref) = &args[0] {
+                            let mut map = obj_ref.borrow_mut(); // Gain mutable access to the original object
+
+                            let data_hash = Value::String("data".to_string()).get_hash();
+                            let index_hash = Value::String("index".to_string()).get_hash();
+
+                            let data = map.get(&data_hash).cloned().ok_or("Missing data")?;
+                            let index = if let Some(Value::Int(i)) = map.get(&index_hash) {
+                                *i
+                            } else {
+                                0
+                            };
+
+                            if let Value::Object(items_ref) = data {
+                                let items = items_ref.borrow();
+
+                                let entry_hash = items.keys().nth(index as usize);
+
+                                if entry_hash.is_none() {
+                                    return Ok(Value::Bool(false));
+                                }
+
+                                if let Some(val) = items.get(&entry_hash.unwrap()) {
+                                    map.insert(index_hash, Value::Int(index + 1));
+
+                                    return Ok(val.clone());
+                                }
+                            }
+
+                            Ok(Value::Bool(false))
+                        } else {
+                            Err("UnexpectedType, expected object".to_string())
+                        }
+                    },
+                },
+                NativeFunction {
+                    name: "has_next",
+                    arity: 1,
+                    call: |args| {
+                        if let Value::Object(obj_ref) = &args[0] {
+                            let map = obj_ref.borrow();
+
+                            let data_hash = Value::String("data".to_string()).get_hash();
+                            let index_hash = Value::String("index".to_string()).get_hash();
+
+                            let data = map.get(&data_hash).cloned().ok_or("Missing data")?;
+                            let index = if let Some(Value::Int(i)) = map.get(&index_hash) {
+                                *i
+                            } else {
+                                0
+                            };
+
+                            if let Value::Object(items_ref) = data {
+                                let items = items_ref.borrow();
+
+                                let entry_hash = items.keys().nth(index as usize);
+
+                                if entry_hash.is_none() {
+                                    return Ok(Value::Bool(false));
+                                }
+
+                                return Ok(Value::Bool(items.get(&entry_hash.unwrap()).is_some()));
+                            }
+
+                            Ok(Value::Bool(false))
+                        } else {
+                            Err("UnexpectedType, expected object".to_string())
+                        }
                     },
                 },
             ],
@@ -137,7 +241,6 @@ impl VM {
                         | OpCode::ConstRef
                         | OpCode::ConstFun
                         | OpCode::ConstObj => {
-                            println!("FFFFFFFFFF {:?}", opcode);
                             let byte = self.read_byte()? as usize;
                             self.current()?.registers[dest] = self.constants[byte].clone();
                         }
@@ -202,20 +305,23 @@ impl VM {
                             let mut args = Vec::new();
                             for _ in 0..arg_count {
                                 let arg_reg = self.read_byte()? as usize;
-                                args.push(self.current()?.registers[arg_reg].clone());
+
+                                let arg = self.current()?.registers[arg_reg].clone();
+
+                                args.push(arg);
                             }
 
                             // Execute the Rust function
-                            let result =
-                                (native_fn.call)(args).map_err(|_| Error::UnexpectedTypeCall)?;
+                            let result = (native_fn.call)(args).map_err(|e| {
+                                panic!("Error in native function: {:?}", e);
+                            })?;
 
                             // Store result in the destination register
                             self.current()?.registers[dest_reg as usize] = result;
                         }
-                        _ =>{
-                            println!("{:?}", func_val);
-                         return Err(Error::UnexpectedTypeCall)
-                    }
+                        _ => {
+                            return Err(Error::UnexpectedTypeCall);
+                        }
                     }
                 }
                 OpCode::Jump => {
@@ -264,9 +370,7 @@ impl VM {
                     let left = current_frame.registers[left_reg].clone();
                     let right = current_frame.registers[right_reg].clone();
 
-                    let res = Self::binary(op, left, right);
-
-                    current_frame.registers[dest] = res
+                    current_frame.registers[dest] = Self::binary(op, left, right);
                 }
                 OpCode::GetProperty => {
                     let dest = self.read_byte()? as usize;
@@ -280,8 +384,13 @@ impl VM {
                         _ => panic!("Expected hash constant at index {}", idx),
                     };
 
-                    if let Value::Object(entries) = &self.current()?.registers[src_idx] {
-                        let value = entries.get(&hash).cloned().expect("No object found");
+                    if let Value::Object(obj_ref) = &self.current()?.registers[src_idx] {
+                        // Use .borrow() to read
+                        let value = obj_ref
+                            .borrow()
+                            .get(&hash)
+                            .cloned()
+                            .expect("No object found");
                         self.current()?.registers[dest] = value;
                     }
                 }
@@ -297,9 +406,9 @@ impl VM {
 
                     let new_val = self.current()?.registers[val_idx].clone();
 
-                    // Mutate the object in the register
-                    if let Value::Object(entries) = &mut self.current()?.registers[obj_idx] {
-                        entries.insert(hash, new_val);
+                    if let Value::Object(obj_ref) = &self.current()?.registers[obj_idx] {
+                        // Use .borrow_mut() to modify the shared map in place!
+                        obj_ref.borrow_mut().insert(hash, new_val);
                     }
                 }
                 OpCode::LoadNative => {
@@ -338,7 +447,7 @@ impl VM {
             Value::Ref(_) | Value::Hash(_) => unreachable!(),
             Value::Fun { .. } => true,
             Value::NativeFun(_) => true,
-            Value::Object(items) => items.len() > 0,
+            Value::Object(items) => items.borrow().len() > 0,
         }
     }
 

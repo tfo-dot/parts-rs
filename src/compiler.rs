@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::rc::Rc;
 
 use crate::parser::Ast;
 use crate::parser::Value as ParserValue;
@@ -116,7 +118,7 @@ pub enum Value {
     Ref(String),
     Fun { arity: u8, body: Vec<u8> },
     NativeFun(NativeFunction),
-    Object(HashMap<u64, Value>),
+    Object(Rc<RefCell<HashMap<u64, Value>>>),
     Hash(u64),
 }
 
@@ -187,7 +189,13 @@ impl Hash for Value {
                 state.write_u8(3);
                 s.hash(state);
             }
-            Value::Object(_) | Value::Fun { .. } | Value::NativeFun(_) => {
+            Value::Object(obj) => {
+                state.write_u8(4);
+                // Hash the memory address of the allocation
+                let ptr = Rc::as_ptr(obj) as usize;
+                ptr.hash(state);
+            }
+            Value::Fun { .. } | Value::NativeFun(_) => {
                 state.write_u8(4);
                 let ptr = self as *const _ as usize;
                 ptr.hash(state);
@@ -275,7 +283,7 @@ impl Display for Value {
             Value::Ref(r) => write!(f, "&{}", r),       // Prefixed with & to show it's a ref
             Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
             Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
-            Value::Object(obj) => write!(f, "<object: {} keys>", obj.len()),
+            Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
         }
     }
@@ -638,6 +646,52 @@ impl Compiler {
 
                 0
             }
+            Ast::ForEach {
+                iterable,
+                var_name,
+                body,
+            } => {
+                let iter = Ast::Declare {
+                    name: "@iter".to_string(),
+                    value: Box::new(Ast::Call {
+                        what: Box::new(Ast::Value(ParserValue::Ref("iter_of".to_string()))),
+                        args: vec![*iterable],
+                    }),
+                };
+
+                let iter_ref = Ast::Value(ParserValue::Ref("@iter".to_string()));
+
+                let has_next = Ast::Call {
+                    what: Box::new(Ast::Value(ParserValue::Ref("has_next".to_string()))),
+                    args: vec![iter_ref.clone()],
+                };
+
+                let decl = Ast::Declare {
+                    name: var_name,
+                    value: Box::new(Ast::Call {
+                        what: Box::new(Ast::Value(ParserValue::Ref("get_next".to_string()))),
+                        args: vec![iter_ref],
+                    }),
+                };
+
+                let new_body = match *body {
+                    Ast::Block { mut code } => {
+                        let mut codes = vec![decl];
+                        codes.append(&mut code);
+                        Ast::Block { code: codes }
+                    }
+                    _ => Ast::Block {
+                        code: vec![decl, *body],
+                    },
+                };
+
+                self.compile(iter);
+
+                self.compile(Ast::For {
+                    condition: Box::new(has_next),
+                    body: Box::new(new_body),
+                })
+            }
             Ast::Block { code } => {
                 self.current().begin_scope();
 
@@ -806,7 +860,7 @@ impl Compiler {
 
                 self.contexts.pop();
 
-                Value::Object(entries_compiled)
+                Value::Object(Rc::new(RefCell::new(entries_compiled)))
             }
             ParserValue::List(entries) => {
                 let obj_entries = entries
@@ -822,7 +876,9 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     use crate::compiler::{OpCode, Value};
     use crate::parser::Ast;
@@ -989,7 +1045,7 @@ mod tests {
                 0,
                 OpCode::Load as u8,
                 1,
-                OpCode::ConstRef as u8,
+                OpCode::ConstReg as u8,
                 0,
             ]
         )
@@ -1256,7 +1312,7 @@ mod tests {
                 1,
                 OpCode::ConstBool as u8,
                 1,
-                OpCode::Jump as u8,
+                OpCode::JumpBy as u8,
                 4,
                 0,
                 OpCode::Load as u8,
@@ -1295,10 +1351,7 @@ mod tests {
                 OpCode::Load as u8,
                 1,
                 OpCode::ConstBool as u8,
-                1,
-                OpCode::Jump as u8,
-                0,
-                0,
+                1
             ]
         )
     }
@@ -1374,7 +1427,7 @@ mod tests {
             c.constant_pool
                 .get(0)
                 .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.len() == 0
+                    entries.borrow().len() == 0
                 } else {
                     false
                 })
@@ -1401,7 +1454,7 @@ mod tests {
 
         expected.insert(Value::Int(100).get_hash(), Value::Bool(false));
 
-        assert_eq!(*obj, Value::Object(expected));
+        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
     }
 
     #[test]
@@ -1419,7 +1472,7 @@ mod tests {
             c.constant_pool
                 .get(0)
                 .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.len() == 0
+                    entries.borrow().len() == 0
                 } else {
                     false
                 })
@@ -1447,7 +1500,7 @@ mod tests {
         expected.insert(Value::Int(0).get_hash(), Value::Int(100));
         expected.insert(Value::Int(1).get_hash(), Value::Bool(false));
 
-        assert_eq!(*obj, Value::Object(expected));
+        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
     }
 
     #[test]

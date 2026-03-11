@@ -1,0 +1,9 @@
+let x = |> file: "*.pts", index: 0, alive: true <|
+
+let iter = iter_of(x);
+
+for has_next(iter) {
+	let item = get_next(iter);
+
+	println(item)
+}
