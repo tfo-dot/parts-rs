@@ -153,7 +153,7 @@ impl ScannerRule {
                     ("break", ""),
                     ("continue", ""),
                     ("translation", ""),
-                    ("in","")
+                    ("in", ""),
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -190,7 +190,7 @@ impl ScannerRule {
                     if left_side == '"' && right_side != '"' {
                         return Err(ScannerError::UnterminatedString);
                     }
-                    
+
                     if left_side == '`' && right_side != '`' {
                         return Err(ScannerError::UnterminatedString);
                     }
@@ -198,7 +198,7 @@ impl ScannerRule {
                     if left_side != '"' && left_side != '`' {
                         return Err(ScannerError::UnknownToken);
                     }
-                    
+
                     // Get the content inside the quotes
                     let content = &runs[1..runs.len() - 1];
                     let mut unescaped = Vec::new();
@@ -239,14 +239,13 @@ impl ScannerRule {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
 
-    use crate::scanner::{Scanner};
+    use crate::scanner::Scanner;
 
     #[test]
     fn check_operator() {
@@ -440,7 +439,6 @@ mod tests {
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
             Token(TokenType::Special, vec!['E', 'O', 'F'])
- 
-       )
+        )
     }
 }

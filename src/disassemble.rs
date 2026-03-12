@@ -39,7 +39,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 OpCode::ConstString | OpCode::ConstRef | OpCode::ConstFun | OpCode::ConstObj => {
                     let idx = code[offset + 3] as usize;
                     println!(
-                        " ConstIdx: {} ({})",
+                        " ConstIdx: {} ({:?})",
                         idx,
                         constants
                             .get(idx)

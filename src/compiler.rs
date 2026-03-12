@@ -149,7 +149,7 @@ pub struct StdDefinition {
 
 impl StdDefinition {
     pub fn get_core() -> Self {
-        use crate::vm::StdModule;
+        use crate::std::StdModule;
 
         return StdDefinition {
             functions: {
@@ -279,8 +279,8 @@ impl Display for Value {
             Value::Int(i) => write!(f, "{}", i),
             Value::Double(d) => write!(f, "{}", d),
             Value::Bool(b) => write!(f, "{}", b),
-            Value::String(s) => write!(f, "\"{}\"", s), // Quoted for clarity
-            Value::Ref(r) => write!(f, "&{}", r),       // Prefixed with & to show it's a ref
+            Value::String(s) => write!(f, "{}", s), // Quoted for clarity
+            Value::Ref(r) => write!(f, "&{}", r),   // Prefixed with & to show it's a ref
             Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
             Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
@@ -591,19 +591,21 @@ impl Compiler {
                 let cond = self.compile(*condition);
 
                 self.emit_op(OpCode::JumpNot);
-
                 self.emit(cond);
+                let jump_to_else_pos = self.emit_jump();
 
-                {
-                    let pos = self.emit_jump();
-                    self.compile(*then_branch);
-                    self.patch_jump(pos);
-                }
+                self.compile(*then_branch);
 
-                if else_branch.is_some() {
-                    let pos = self.emit_jump_op(OpCode::JumpBy);
-                    self.compile(*else_branch.unwrap());
-                    self.patch_jump(pos);
+                if let Some(else_body) = else_branch {
+                    let skip_else_pos = self.emit_jump_op(OpCode::JumpBy);
+
+                    self.patch_jump(jump_to_else_pos);
+
+                    self.compile(*else_body);
+
+                    self.patch_jump(skip_else_pos);
+                } else {
+                    self.patch_jump(jump_to_else_pos);
                 }
 
                 0

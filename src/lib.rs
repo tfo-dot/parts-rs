@@ -5,5 +5,7 @@ pub mod parser_rules;
 pub mod parser_rules_postfix;
 pub mod compiler;
 pub mod vm;
-mod utils;
 pub mod disassemble;
+pub mod std;
+
+mod utils;
