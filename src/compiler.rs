@@ -61,6 +61,8 @@ struct Context {
     next_free_register: u8,
 
     loop_stack: Vec<LoopContext>,
+
+    loaded_natives: HashMap<String, u8>,
 }
 
 impl Context {
@@ -70,6 +72,7 @@ impl Context {
             scopes: vec![HashMap::new()],
             next_free_register: 0,
             loop_stack: vec![],
+            loaded_natives: HashMap::new(),
         };
     }
 
@@ -428,9 +431,13 @@ impl Compiler {
                 }
 
                 if let Some(_std_func) = std.functions.iter().find(|f| f.name == r) {
+                    if let Some(cached_reg) = self.current().loaded_natives.get(&r) {
+                        return vec![*cached_reg];
+                    }
+
                     let reg = self.next_free_address();
 
-                    let hash = Value::Hash(Value::String(r).get_hash());
+                    let hash = Value::Hash(Value::String(r.clone()).get_hash());
 
                     let idx = match self.constant_pool.iter().position(|c| *c == hash) {
                         Some(hash_idx) => hash_idx,
@@ -440,6 +447,8 @@ impl Compiler {
                             self.constant_pool.len() - 1
                         }
                     };
+
+                    self.current().loaded_natives.insert(r.clone(), reg);
 
                     return vec![OpCode::LoadNative as u8, reg, idx as u8];
                 }
@@ -499,6 +508,10 @@ impl Compiler {
                     }
 
                     if let Some(_std_func) = self.std.functions.iter().find(|f| f.name == ref_val) {
+                        if let Some(addr) = self.current().loaded_natives.get(ref_val) {
+                            return *addr;
+                        }
+
                         let reg = self.next_free_address();
 
                         let hash = Value::Hash(Value::String(ref_val.to_string()).get_hash());
@@ -513,6 +526,7 @@ impl Compiler {
                         };
 
                         self.emit_vec(vec![OpCode::LoadNative as u8, reg, idx as u8]);
+                        self.current().loaded_natives.insert(ref_val.clone(), reg);
                         return reg as u8;
                     }
                 }
