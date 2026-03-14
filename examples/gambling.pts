@@ -1,6 +1,6 @@
 let rnd = rand();
 
-if (rnd % 7) == 0 {
+if (rnd % 10) == 0 {
 	println("Change Da World... My Final Message, Goodbye");
 } else {
 	println("God dang it")

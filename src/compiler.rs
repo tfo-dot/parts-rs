@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::rc::Rc;
 
@@ -414,6 +415,80 @@ impl Compiler {
         self.emit_vec(temp);
     }
 
+    fn find_stds(&self, ast: Ast) -> Vec<String> {
+        match ast {
+            Ast::Value(val) => match val {
+                ParserValue::Ref(r) => {
+                    return if let Some(_) = self.std.functions.iter().find(|f| f.name == r) {
+                        vec![r]
+                    } else {
+                        vec![]
+                    };
+                }
+                _ => vec![],
+            },
+            Ast::Declare { name: _, value } => self.find_stds(*value),
+            Ast::Raise { value } | Ast::Return { value } => self.find_stds(*value),
+            Ast::Call { what, args } => self
+                .find_stds(*what)
+                .into_iter()
+                .chain(args.iter().map(|azt| self.find_stds(azt.clone())).flatten())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::Binary {
+                left,
+                right,
+                operator: _,
+            } => self
+                .find_stds(*left)
+                .into_iter()
+                .chain(self.find_stds(*right))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::If {
+                then_branch,
+                else_branch,
+                condition,
+            } => self
+                .find_stds(*condition)
+                .into_iter()
+                .chain(self.find_stds(*then_branch))
+                .chain(self.find_stds(*else_branch.unwrap_or(Box::new(Ast::Ignore))))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::For { condition, body } => self
+                .find_stds(*condition)
+                .into_iter()
+                .chain(self.find_stds(*body))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::ForEach {
+                iterable,
+                var_name: _,
+                body,
+            } => self
+                .find_stds(*iterable)
+                .into_iter()
+                .chain(self.find_stds(*body))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::Block { code } => code
+                .iter()
+                .map(|azt| self.find_stds(azt.clone()))
+                .flatten()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
+            Ast::Set { name: _, value } => self.find_stds(*value),
+            _ => vec![],
+        }
+    }
+
     fn compile_value(&mut self, value: Value) -> Vec<u8> {
         return match value {
             Value::Int(i) => i.to_le_bytes().into(),
@@ -602,6 +677,17 @@ impl Compiler {
                 else_branch,
                 condition,
             } => {
+                let used_stds: Vec<_> = self
+                    .find_stds(*then_branch.clone())
+                    .into_iter()
+                    .chain(self.find_stds(*else_branch.clone().unwrap_or(Box::new(Ast::Ignore))))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|s| Ast::Value(ParserValue::Ref(s)))
+                    .collect();
+
+                let _ = self.compile_all(used_stds);
+
                 let cond = self.compile(*condition);
 
                 self.emit_op(OpCode::JumpNot);
