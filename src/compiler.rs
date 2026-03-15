@@ -388,6 +388,8 @@ impl Value {
 
                     let raw_s = &raw[idx..idx + len as usize];
 
+                    idx += len as usize;
+
                     values.push(Value::String(String::from_utf8(raw_s.to_vec()).unwrap()));
                 }
                 4 => {
@@ -405,6 +407,8 @@ impl Value {
 
                     let body = &raw[idx..idx + len as usize];
 
+                    idx += len as usize;
+
                     values.push(Value::Fun {
                         arity,
                         body: body.to_vec(),
@@ -421,7 +425,7 @@ impl Value {
 
                     for _counter in 0..count * 2 {
                         let (mut temp_vals, temp_idx) =
-                            crate::compiler::Value::decode(raw[idx..raw.len()].to_vec(), true, idx);
+                            crate::compiler::Value::decode(raw.clone(), true, idx);
 
                         idx = temp_idx;
 

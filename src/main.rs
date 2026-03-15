@@ -119,6 +119,7 @@ fn get_code(config: Cli) -> CompilerOutput {
     };
 }
 
+#[repr(C)]
 struct BytecodeHeader {
     magic: [u8; 4],
     version: u32,
@@ -137,8 +138,19 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
         let mut header_buf = [0u8; std::mem::size_of::<BytecodeHeader>()];
 
         if file.read_exact(&mut header_buf).is_ok() {
-            let header: &BytecodeHeader =
-                unsafe { &*(header_buf.as_ptr() as *const BytecodeHeader) };
+            let magic = &header_buf[0..4];
+            let version = u32::from_le_bytes(header_buf[4..8].try_into().unwrap());
+            let source_hash = u64::from_le_bytes(header_buf[8..16].try_into().unwrap());
+            let payload_size = u64::from_le_bytes(header_buf[16..24].try_into().unwrap());
+            let consts_offset = u64::from_le_bytes(header_buf[24..32].try_into().unwrap());
+
+            let header = BytecodeHeader {
+                magic: magic.try_into().unwrap(),
+                version,
+                source_hash,
+                payload_size,
+                consts_offset,
+            };
 
             if header.magic == [0x7F, b'P', b'T', b'S']
                 && header.version == 1
@@ -199,25 +211,17 @@ fn save_cache(path: &Path, raw_bc: &[u8], constant_pool: Vec<Value>, hash: u64) 
 
     let data = raw_bc;
 
-    let header = BytecodeHeader {
-        magic: [0x7F, b'P', b'T', b'S'],
-        version: 1,
-        source_hash: hash,
-        payload_size: data.len() as u64,
-        consts_offset: encoded_c.len() as u64,
-    };
-
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path).unwrap();
 
-    let header_bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(
-            (&header as *const BytecodeHeader) as *const u8,
-            std::mem::size_of::<BytecodeHeader>(),
-        )
-    };
+    let mut header_bytes = Vec::new();
+    header_bytes.extend_from_slice(&[0x7F, b'P', b'T', b'S']);
+    header_bytes.extend_from_slice(&1u32.to_le_bytes());
+    header_bytes.extend_from_slice(&hash.to_le_bytes());
+    header_bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    header_bytes.extend_from_slice(&(encoded_c.len() as u64).to_le_bytes());
 
-    file.write_all(header_bytes).unwrap();
+    file.write_all(&header_bytes).unwrap();
     file.write_all(&encoded_c).unwrap();
     file.write_all(data).unwrap();
     fs::rename(temp_path, path).unwrap();
