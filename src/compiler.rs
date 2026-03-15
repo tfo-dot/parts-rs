@@ -262,6 +262,203 @@ impl Value {
             }
         }
     }
+
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Value::Int(i) => {
+                let mut tmp = vec![0];
+                let mut encoded: Vec<_> = i.to_le_bytes().into();
+
+                tmp.append(&mut encoded);
+
+                return tmp;
+            }
+            Value::Double(d) => {
+                let mut tmp = vec![1];
+                let mut encoded: Vec<_> = d.to_le_bytes().into();
+
+                tmp.append(&mut encoded);
+
+                return tmp;
+            }
+            Value::Bool(b) => vec![2, *b as u8],
+            Value::String(s) => {
+                let mut tmp = vec![3];
+
+                let mut s_size: Vec<_> = s.len().to_le_bytes().into();
+
+                tmp.append(&mut s_size);
+
+                let mut encoded: Vec<_> = s.bytes().collect();
+
+                tmp.append(&mut encoded);
+
+                return tmp;
+            }
+            Value::Fun { arity, body } => {
+                let mut tmp = vec![4];
+
+                tmp.push(*arity);
+
+                let mut b_size: Vec<_> = body.len().to_le_bytes().into();
+
+                tmp.append(&mut b_size);
+
+                let mut body_vec = body.clone();
+
+                tmp.append(&mut body_vec);
+
+                return tmp;
+            }
+            Value::Object(ref_cell) => {
+                let mut tmp = vec![5];
+
+                let obj = ref_cell.borrow();
+
+                tmp.push(obj.len() as u8);
+
+                for (key, value) in obj.iter() {
+                    tmp.push(6);
+
+                    let mut encoded: Vec<_> = key.to_le_bytes().into();
+
+                    tmp.append(&mut encoded);
+
+                    let mut encoded_val = value.encode();
+
+                    tmp.append(&mut encoded_val);
+                }
+
+                return tmp;
+            }
+            Value::Hash(h) => {
+                let mut tmp = vec![6];
+                let mut encoded: Vec<_> = h.to_le_bytes().into();
+
+                tmp.append(&mut encoded);
+
+                return tmp;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn decode(raw: Vec<u8>, once: bool, starting_idx: usize) -> (Vec<Value>, usize) {
+        let mut values = vec![];
+
+        let mut idx = starting_idx;
+
+        while idx < raw.len() {
+            match raw[idx] {
+                0 => {
+                    idx += 1;
+
+                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+
+                    idx += 8;
+
+                    values.push(Value::Int(i64::from_le_bytes(bytes)));
+                }
+                1 => {
+                    idx += 1;
+
+                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+
+                    idx += 8;
+
+                    values.push(Value::Double(f64::from_le_bytes(bytes)));
+                }
+                2 => {
+                    idx += 1;
+
+                    let val = raw[idx];
+
+                    idx += 1;
+
+                    values.push(Value::Bool(val != 0));
+                }
+                3 => {
+                    idx += 1;
+
+                    let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+
+                    let len = i64::from_le_bytes(len_bytes);
+
+                    idx += 8;
+
+                    let raw_s = &raw[idx..idx + len as usize];
+
+                    values.push(Value::String(String::from_utf8(raw_s.to_vec()).unwrap()));
+                }
+                4 => {
+                    idx += 1;
+
+                    let arity = raw[idx];
+
+                    idx += 1;
+
+                    let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+
+                    let len = i64::from_le_bytes(len_bytes);
+
+                    idx += 8;
+
+                    let body = &raw[idx..idx + len as usize];
+
+                    values.push(Value::Fun {
+                        arity,
+                        body: body.to_vec(),
+                    });
+                }
+                5 => {
+                    idx += 1;
+
+                    let count = raw[idx];
+
+                    idx += 1;
+
+                    let mut entries = vec![];
+
+                    for _counter in 0..count * 2 {
+                        let (mut temp_vals, temp_idx) =
+                            crate::compiler::Value::decode(raw[idx..raw.len()].to_vec(), true, idx);
+
+                        idx = temp_idx;
+
+                        entries.append(&mut temp_vals);
+                    }
+
+                    let mut obj: HashMap<u64, Value> = HashMap::new();
+
+                    for chunk in entries.chunks_exact(2).into_iter() {
+                        let key_raw = match chunk[0] {
+                            Value::Hash(h) => h,
+                            _ => unreachable!(),
+                        };
+
+                        obj.insert(key_raw, chunk[1].clone());
+                    }
+
+                    values.push(Value::Object(Rc::new(RefCell::new(obj))));
+                }
+                6 => {
+                    idx += 1;
+
+                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+
+                    idx += 8;
+
+                    values.push(Value::Hash(u64::from_le_bytes(bytes)));
+                }
+                _ => panic!("Unexpected value type"),
+            }
+
+            if once {
+                break;
+            }
+        }
+        return (values, idx);
+    }
 }
 
 impl PartialOrd for Value {

@@ -56,7 +56,7 @@ fn get_code(config: Cli) -> CompilerOutput {
         if config.debug {
             println!("Attempting to use the cached version");
         }
-        return get_bytecode(&config.input, &config.input.with_extension("ptc"));
+        return get_bytecode(config);
     }
 
     let content = if config.shebang {
@@ -124,13 +124,16 @@ struct BytecodeHeader {
     version: u32,
     source_hash: u64,
     payload_size: u64,
+    consts_offset: u64,
 }
 
-fn get_bytecode(source_path: &Path, cache_path: &Path) -> CompilerOutput {
+fn get_bytecode(config: Cli) -> CompilerOutput {
+    let source_path = config.input.clone();
+    let cache_path = config.input.with_extension("ptc");
     let source_content = fs::read(source_path).expect("Failed to read source");
     let current_hash = xxh3_64(&source_content);
 
-    if let Ok(mut file) = File::open(cache_path) {
+    if let Ok(mut file) = File::open(&cache_path) {
         let mut header_buf = [0u8; std::mem::size_of::<BytecodeHeader>()];
 
         if file.read_exact(&mut header_buf).is_ok() {
@@ -141,20 +144,37 @@ fn get_bytecode(source_path: &Path, cache_path: &Path) -> CompilerOutput {
                 && header.version == 1
                 && header.source_hash == current_hash
             {
-                let mut bytecode = Vec::with_capacity(header.payload_size as usize);
-                file.read_to_end(&mut bytecode).unwrap();
+                let mut buff = Vec::with_capacity(
+                    header.payload_size as usize + header.consts_offset as usize,
+                );
+
+                file.read_to_end(&mut buff).unwrap();
+
+                let encoded_c = buff[0..header.consts_offset as usize].to_vec();
+
+                let bytecode = buff[header.consts_offset as usize
+                    ..header.consts_offset as usize + header.payload_size as usize]
+                    .to_vec();
 
                 return CompilerOutput {
                     code: bytecode,
-                    consts: vec![],
+                    consts: Value::decode(encoded_c, false, 0).0,
                 };
             }
         }
     }
 
-    let str_content = String::from_utf8(source_content).expect("LOL");
+    let content = if config.shebang {
+        let str_content = String::from_utf8(source_content).expect("Can't read utf8 contents");
 
-    let mut p = Partser::new(str_content);
+        let split = str_content.split_once("\n").unwrap();
+
+        split.1.to_string()
+    } else {
+        String::from_utf8(source_content).unwrap()
+    };
+
+    let mut p = Partser::new(content);
 
     let ast = p.parse_all().expect("Got error parser lol");
 
@@ -162,7 +182,7 @@ fn get_bytecode(source_path: &Path, cache_path: &Path) -> CompilerOutput {
 
     let bc = c.compile_all(ast).expect("Got error cmp lol");
 
-    save_cache(cache_path, &bc, current_hash);
+    save_cache(&cache_path, &bc, c.constant_pool.clone(), current_hash);
     return CompilerOutput {
         code: bc,
         consts: c.constant_pool,
@@ -174,15 +194,19 @@ struct CompilerOutput {
     consts: Vec<Value>,
 }
 
-fn save_cache(path: &Path, data: &[u8], hash: u64) {
+fn save_cache(path: &Path, raw_bc: &[u8], constant_pool: Vec<Value>, hash: u64) {
+    let encoded_c: Vec<_> = constant_pool.iter().map(|c| c.encode()).flatten().collect();
+
+    let data = raw_bc;
+
     let header = BytecodeHeader {
         magic: [0x7F, b'P', b'T', b'S'],
         version: 1,
         source_hash: hash,
         payload_size: data.len() as u64,
+        consts_offset: encoded_c.len() as u64,
     };
 
-    // Standard Rust safety: Write to tmp then rename
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path).unwrap();
 
@@ -194,6 +218,7 @@ fn save_cache(path: &Path, data: &[u8], hash: u64) {
     };
 
     file.write_all(header_bytes).unwrap();
+    file.write_all(&encoded_c).unwrap();
     file.write_all(data).unwrap();
     fs::rename(temp_path, path).unwrap();
 }
