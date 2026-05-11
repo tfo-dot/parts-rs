@@ -1,6 +1,5 @@
 use crate::{
-    parser::Error as ParserError,
-    parser::{Ast, Parser, Value},
+    parser::{Ast, Error as ParserError, ImportType, MacroArm, Parser, Value},
     scanner::{Token, TokenType},
 };
 use std::{fmt, sync::Arc};
@@ -29,10 +28,118 @@ impl ParserRule {
     pub fn get_default_rules() -> Vec<ParserRule> {
         vec![
             ParserRule {
+                id: "ImportStmt".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| {
+                    parser.check(Token(TokenType::Keyword, "IMPORT".chars().collect()))
+                }),
+                parse: Arc::new(|parser| {
+                    let mut import_type = ImportType::Regular;
+                    let mut import_map = None;
+
+                    if parser.match_keyword("SYNTAX") {
+                        import_type = ImportType::Syntax;
+                    } else if parser.match_keyword("TRANSLATION") {
+                        import_type = ImportType::Translation;
+                    }
+
+                    if parser.match_operator("LEFT_BRACE") {
+                        let mut identifiers: Vec<String> = vec![];
+
+                        if !parser
+                            .check(Token(TokenType::Operator, "RIGHT_BRACE".chars().collect()))
+                        {
+                            loop {
+                                let identifier = parser.advance()?;
+
+                                if identifier.0 != TokenType::Identifier {
+                                    return Err(ParserError::TokenMismatch);
+                                }
+
+                                identifiers.push(identifier.1.iter().collect());
+
+                                if !parser.match_operator("COMMA") {
+                                    break;
+                                }
+                            }
+
+                            if !parser.match_operator("RIGHT_BRACE") {
+                                return Err(ParserError::TokenMismatch);
+                            }
+
+                            if !parser.match_keyword("FROM") {
+                                return Err(ParserError::TokenMismatch);
+                            }
+                        }
+
+                        import_map = Some(identifiers)
+                    }
+
+                    let source_token = parser.advance()?;
+
+                    if source_token.0 != TokenType::String {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    let mut alias = None;
+                    if parser.match_keyword("AS") {
+                        let alias_token = parser.advance()?;
+                        if alias_token.0 != TokenType::Identifier {
+                            return Err(ParserError::TokenMismatch);
+                        }
+                        alias = Some(alias_token.1.iter().collect());
+                    }
+
+                    Ok(Ast::Import {
+                        import_type,
+                        import_map,
+                        source: source_token.1.iter().collect::<String>(),
+                        alias,
+                    })
+                }),
+            },
+            ParserRule {
+                id: "UseStmt".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| {
+                    parser.check(Token(TokenType::Keyword, "USE".chars().collect()))
+                }),
+                parse: Arc::new(|parser| {
+                    let import_type = if parser.match_keyword("SYNTAX") {
+                        ImportType::Syntax
+                    } else if parser.match_keyword("TRANSLATION") {
+                        ImportType::Translation
+                    } else {
+                        return Err(ParserError::TokenMismatch);
+                    };
+
+                    let source_token = parser.advance()?;
+                    if source_token.0 != TokenType::String {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    if !parser.match_keyword("AS") {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    let alias_token = parser.advance()?;
+                    if alias_token.0 != TokenType::Identifier {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    Ok(Ast::Import {
+                        import_type,
+                        import_map: None,
+                        source: source_token.1.iter().collect(),
+                        alias: Some(alias_token.1.iter().collect()),
+                    })
+                }),
+            },
+            ParserRule {
                 id: "LetStmt".to_string(),
                 advance_token: true,
                 rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, vec!['L', 'E', 'T']))
+                    parser.check(Token(TokenType::Keyword, "LET".chars().collect()))
                 }),
                 parse: Arc::new(|parser| {
                     let identifier = parser.advance()?;
@@ -307,13 +414,28 @@ impl ParserRule {
                 }),
                 parse: Arc::new(|parser| {
                     let raw = parser.advance()?;
-                    let parsed: i64 = raw
-                        .1
-                        .iter()
-                        .collect::<String>()
-                        .parse()
-                        .map_err(|_err| ParserError::TokenMismatch)?;
-                    Ok(Ast::Value(Value::Int(parsed)))
+
+                    match raw.1.iter().filter(|&c| *c == '.').count() {
+                        0 => {
+                            let parsed: i64 = raw
+                                .1
+                                .iter()
+                                .collect::<String>()
+                                .parse()
+                                .map_err(|_err| ParserError::TokenMismatch)?;
+                            Ok(Ast::Value(Value::Int(parsed)))
+                        }
+                        1 => {
+                            let parsed: f64 = raw
+                                .1
+                                .iter()
+                                .collect::<String>()
+                                .parse()
+                                .map_err(|_err| ParserError::TokenMismatch)?;
+                            Ok(Ast::Value(Value::Double(parsed)))
+                        }
+                        _ => Err(ParserError::TokenMismatch),
+                    }
                 }),
             },
             ParserRule {
@@ -439,6 +561,105 @@ impl ParserRule {
                 }),
             },
             ParserRule {
+                id: "MacroDefinition".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| {
+                    parser.check(Token(TokenType::Keyword, "PART".chars().collect()))
+                }),
+                parse: Arc::new(|parser| {
+                    let macro_name = parser.advance()?;
+
+                    if macro_name.0 != TokenType::Identifier {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    let mut arms: Vec<MacroArm> = vec![];
+
+                    if !parser.match_operator("LEFT_BRACE") {
+                        return Err(ParserError::TokenMismatch);
+                    }
+
+                    loop {
+                        if parser.match_operator("RIGHT_BRACE") {
+                            break;
+                        }
+
+                        let mut current_arm = MacroArm {
+                            expansion: vec![],
+                            pattern: vec![],
+                        };
+
+                        loop {
+                            if !parser.match_operator("LEFT_PAREN") {
+                                return Err(ParserError::TokenMismatch);
+                            }
+
+                            loop {
+                                if parser.match_operator("AT") {
+                                    if parser.peek()?.0 == TokenType::Identifier {
+                                        let mut temp = parser.advance()?;
+
+                                        let mut tmp_vec = vec!['@'];
+
+                                        tmp_vec.append(&mut temp.1);
+
+                                        temp.1 = tmp_vec;
+
+                                        current_arm.pattern.push(temp);
+                                        continue;
+                                    }
+                                }
+
+                                if parser.match_operator("RIGHT_PAREN") {
+                                    break;
+                                }
+
+                                current_arm.pattern.push(parser.advance()?);
+                            }
+
+                            break;
+                        }
+
+                        if !parser.match_operator("ARROW_LEFT") {
+                            return Err(ParserError::TokenMismatch);
+                        }
+
+                        if !parser.match_operator("LEFT_BRACE") {
+                            return Err(ParserError::TokenMismatch);
+                        }
+
+                        loop {
+                            if parser.match_operator("RIGHT_BRACE") {
+                                break;
+                            }
+
+                            if parser.match_operator("AT") {
+                                if parser.peek()?.0 == TokenType::Identifier {
+                                    let mut temp = parser.advance()?;
+
+                                    let mut tmp_vec = vec!['@'];
+
+                                    tmp_vec.append(&mut temp.1);
+
+                                    temp.1 = tmp_vec;
+
+                                    current_arm.expansion.push(temp);
+                                    continue;
+                                }
+                            }
+
+                            current_arm.expansion.push(parser.advance()?);
+                        }
+
+                        arms.push(current_arm);
+                    }
+
+                    parser.add_macro(macro_name, arms);
+
+                    Ok(Ast::Ignore)
+                }),
+            },
+            ParserRule {
                 id: "SemicolonSkip".to_string(),
                 advance_token: true,
                 rule: Arc::new(|parser| {
@@ -447,658 +668,5 @@ impl ParserRule {
                 parse: Arc::new(|_parser| Ok(Ast::Ignore)),
             },
         ]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::parser::{Ast, Parser, Value};
-
-    #[test]
-    fn test_semicolon() {
-        let mut p = Parser::new(";".to_string());
-
-        let res = p.parse_all();
-
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-
-        assert_eq!(val.len(), 0);
-    }
-
-    #[test]
-    fn test_array_empty() {
-        let mut p = Parser::new("[]".to_string());
-
-        let res = p.parse_all();
-
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(inner_arr.as_slice(), &[]);
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_array_one_element() {
-        let mut p = Parser::new("[false]".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(inner_arr.as_slice(), &[Value::Bool(false)]);
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_array_two_elements() {
-        let mut p = Parser::new("[false, true]".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(
-                inner_arr.as_slice(),
-                &[Value::Bool(false), Value::Bool(true)]
-            );
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_object_empty() {
-        let mut p = Parser::new("|> <|".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
-            assert_eq!(inner_obj.clone(), Vec::<(Value, Value)>::new());
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_object_one_entry() {
-        let mut p = Parser::new("|> expectFalse: false <|".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
-            assert_eq!(
-                inner_obj.clone(),
-                vec![(Value::Ref("expectFalse".to_string()), Value::Bool(false))]
-            );
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_object_two_entries() {
-        let mut p = Parser::new("|> expectFalse: false, expectTrue: true <|".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
-            assert_eq!(
-                inner_obj.clone(),
-                vec![
-                    (Value::Ref("expectFalse".to_string()), Value::Bool(false)),
-                    (Value::Ref("expectTrue".to_string()), Value::Bool(true))
-                ]
-            );
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_group() {
-        let mut p = Parser::new("(false)".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(false))]);
-    }
-
-    #[test]
-    fn test_var() {
-        let mut p = Parser::new("x".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Value(Value::Ref("x".to_string()))]);
-    }
-
-    #[test]
-    fn test_string() {
-        let mut p = Parser::new("`x`".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::String("x".to_string()))]
-        );
-    }
-
-    #[test]
-    fn test_number() {
-        let mut p = Parser::new("0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Value(Value::Int(0))]);
-    }
-
-    #[test]
-    fn test_false() {
-        let mut p = Parser::new("false".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(false))]);
-    }
-
-    #[test]
-    fn test_true() {
-        let mut p = Parser::new("true".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(true))]);
-    }
-
-    #[test]
-    fn test_continue() {
-        let mut p = Parser::new("continue".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::ContinueCode]);
-    }
-
-    #[test]
-    fn test_break() {
-        let mut p = Parser::new("break".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::BreakCode]);
-    }
-
-    #[test]
-    fn test_return_no_value() {
-        let mut p = Parser::new("return;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Return {
-                value: Box::new(Ast::Ignore)
-            }]
-        );
-    }
-
-    #[test]
-    fn test_return_with_value() {
-        let mut p = Parser::new("return 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Return {
-                value: Box::new(Ast::Value(Value::Int(0)))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_raise_no_value() {
-        let mut p = Parser::new("raise;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Raise {
-                value: Box::new(Ast::Ignore)
-            }]
-        );
-    }
-
-    #[test]
-    fn test_raise_with_value() {
-        let mut p = Parser::new("raise 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Raise {
-                value: Box::new(Ast::Value(Value::Int(0)))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_block_empty() {
-        let mut p = Parser::new("{}".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(res.unwrap(), vec![Ast::Block { code: vec![] }]);
-    }
-
-    #[test]
-    fn test_block_with_code() {
-        let mut p = Parser::new("{ return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Block {
-                code: vec![Ast::Return {
-                    value: Box::new(Ast::Value(Value::Int(0)))
-                }]
-            }]
-        );
-    }
-
-    #[test]
-    fn test_for() {
-        let mut p = Parser::new("for true { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::For {
-                condition: Box::new(Ast::Value(Value::Bool(true))),
-                body: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                })
-            }]
-        );
-    }
-
-    #[test]
-    fn test_for_without_braces() {
-        let mut p = Parser::new("for true return 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::For {
-                condition: Box::new(Ast::Value(Value::Bool(true))),
-                body: Box::new(Ast::Return {
-                    value: Box::new(Ast::Value(Value::Int(0)))
-                })
-            }]
-        );
-    }
-
-    #[test]
-    fn test_for_each() {
-        let mut p = Parser::new("for x in y { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::ForEach {
-                body: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                }),
-                iterable: Box::new(Ast::Value(Value::Ref("y".to_string()))),
-                var_name: "x".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn test_if() {
-        let mut p = Parser::new("if true { return 0 } else {return 1}".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::If {
-                condition: Box::new(Ast::Value(Value::Bool(true))),
-                then_branch: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                }),
-                else_branch: Some(Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(1)))
-                    }]
-                })),
-            }]
-        );
-    }
-
-    #[test]
-    fn test_if_no_else() {
-        let mut p = Parser::new("if true { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::If {
-                condition: Box::new(Ast::Value(Value::Bool(true))),
-                then_branch: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                }),
-                else_branch: None,
-            }]
-        );
-    }
-
-    #[test]
-    fn test_fun_no_arguments_short() {
-        let mut p = Parser::new("fun () = 0;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec![],
-                body: Box::new(Ast::Return {
-                    value: Box::new(Ast::Value(Value::Int(0)))
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_fun_no_arguments() {
-        let mut p = Parser::new("fun () {return 0}".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec![],
-                body: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_fun_one_argument_short() {
-        let mut p = Parser::new("fun (x) = 0;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec!["x".to_string()],
-                body: Box::new(Ast::Return {
-                    value: Box::new(Ast::Value(Value::Int(0)))
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_fun_one_argument() {
-        let mut p = Parser::new("fun (x) {return 0}".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec!["x".to_string()],
-                body: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_fun_two_arguments_short() {
-        let mut p = Parser::new("fun (x, y) = 0;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec!["x".to_string(), "y".to_string()],
-                body: Box::new(Ast::Return {
-                    value: Box::new(Ast::Value(Value::Int(0)))
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_fun_two_arguments() {
-        let mut p = Parser::new("fun (x, y) {return 0}".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::Fun {
-                args: vec!["x".to_string(), "y".to_string()],
-                body: Box::new(Ast::Block {
-                    code: vec![Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    }]
-                })
-            })]
-        );
-    }
-
-    #[test]
-    fn test_let() {
-        let mut p = Parser::new("let x = 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Int(0)))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_no_args_short() {
-        let mut p = Parser::new("let x() = 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec![],
-                    body: Box::new(Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    })
-                }))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_no_args() {
-        let mut p = Parser::new("let x() { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec![],
-                    body: Box::new(Ast::Block {
-                        code: vec![Ast::Return {
-                            value: Box::new(Ast::Value(Value::Int(0)))
-                        }]
-                    })
-                }))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_one_arg_short() {
-        let mut p = Parser::new("let x(x) = 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec!["x".to_string()],
-                    body: Box::new(Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    })
-                }))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_one_arg() {
-        let mut p = Parser::new("let x(x) { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec!["x".to_string()],
-                    body: Box::new(Ast::Block {
-                        code: vec![Ast::Return {
-                            value: Box::new(Ast::Value(Value::Int(0)))
-                        }]
-                    })
-                }))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_two_args_short() {
-        let mut p = Parser::new("let x(x, y) = 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec!["x".to_string(), "y".to_string()],
-                    body: Box::new(Ast::Return {
-                        value: Box::new(Ast::Value(Value::Int(0)))
-                    })
-                }))
-            }]
-        );
-    }
-
-    #[test]
-    fn test_let_function_two_args() {
-        let mut p = Parser::new("let x(x, y) { return 0 }".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(Value::Fun {
-                    args: vec!["x".to_string(), "y".to_string()],
-                    body: Box::new(Ast::Block {
-                        code: vec![Ast::Return {
-                            value: Box::new(Ast::Value(Value::Int(0)))
-                        }]
-                    })
-                }))
-            }]
-        );
     }
 }

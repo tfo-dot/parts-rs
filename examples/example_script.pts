@@ -1,0 +1,7 @@
+let status = exec("playerctl", "status");
+
+if status == "Playing\n" {
+	print(exec("playerctl", "metadata", "mpris:artUrl"))
+} else {
+	print("art url path lol")
+}

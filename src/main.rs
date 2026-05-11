@@ -1,10 +1,5 @@
 use clap::Parser;
-use parts_rs::{
-    compiler::{Compiler, Value},
-    disassemble,
-    parser::Parser as Partser,
-    vm::VM,
-};
+use parts::{compiler::Compiler, disassemble, parser::Parser as Partser, value::Value, vm::VM};
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -59,6 +54,8 @@ fn get_code(config: Cli) -> CompilerOutput {
         return get_bytecode(config);
     }
 
+    let raw_path = config.input.clone();
+
     let content = if config.shebang {
         let content = fs::read_to_string(config.input).unwrap();
 
@@ -93,7 +90,7 @@ fn get_code(config: Cli) -> CompilerOutput {
         println!();
     }
 
-    let mut c = Compiler::new();
+    let mut c = Compiler::new(raw_path.parent().unwrap().to_path_buf());
 
     let bc = c.compile_all(ast).expect("Got error cmp lol");
 
@@ -131,7 +128,7 @@ struct BytecodeHeader {
 fn get_bytecode(config: Cli) -> CompilerOutput {
     let source_path = config.input.clone();
     let cache_path = config.input.with_extension("ptc");
-    let source_content = fs::read(source_path).expect("Failed to read source");
+    let source_content = fs::read(&source_path).expect("Failed to read source");
     let current_hash = xxh3_64(&source_content);
 
     if let Ok(mut file) = File::open(&cache_path) {
@@ -190,7 +187,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
 
     let ast = p.parse_all().expect("Got error parser lol");
 
-    let mut c = Compiler::new();
+    let mut c = Compiler::new(source_path.parent().unwrap().to_path_buf());
 
     let bc = c.compile_all(ast).expect("Got error cmp lol");
 

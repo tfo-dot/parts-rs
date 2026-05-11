@@ -1,0 +1,276 @@
+#[cfg(test)]
+mod tests {
+    use parts::parser::{Ast, BinaryOperator, Parser, Value};
+
+    #[test]
+    fn test_dot() {
+        let mut p = Parser::new("a.b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Dot {
+                accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                access: Box::new(Ast::Value(Value::Ref("b".to_string())))
+            }]
+        );
+    }
+
+    #[test]
+    fn test_arr_index() {
+        let mut p = Parser::new("a[b]".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Dot {
+                accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                access: Box::new(Ast::Value(Value::Ref("b".to_string())))
+            }]
+        );
+    }
+
+    #[test]
+    fn test_add() {
+        let mut p = Parser::new("a + b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Add
+            }]
+        );
+    }
+
+    #[test]
+    fn test_minus() {
+        let mut p = Parser::new("a - b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Minus
+            }]
+        );
+    }
+
+    #[test]
+    fn test_multiply() {
+        let mut p = Parser::new("a * b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Multiply
+            }]
+        );
+    }
+
+    #[test]
+    fn test_divide() {
+        let mut p = Parser::new("a / b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Divide
+            }]
+        );
+    }
+
+    #[test]
+    fn test_equals() {
+        let mut p = Parser::new("a == b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Equals
+            }]
+        );
+    }
+
+    #[test]
+    fn test_greater_than() {
+        let mut p = Parser::new("a > b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::GreaterThan
+            }]
+        );
+    }
+
+    #[test]
+    fn test_greater_than_or_equal() {
+        let mut p = Parser::new("a >= b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        let a = Box::new(Ast::Value(Value::Ref("a".to_string())));
+        let b = Box::new(Ast::Value(Value::Ref("b".to_string())));
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Binary {
+                    left: a.clone(),
+                    right: b.clone(),
+                    operator: BinaryOperator::GreaterThan
+                }),
+                right: Box::new(Ast::Binary {
+                    left: a,
+                    right: b,
+                    operator: BinaryOperator::Equals
+                }),
+                operator: BinaryOperator::Add
+            }]
+        );
+    }
+
+    #[test]
+    fn test_less_than() {
+        let mut p = Parser::new("a < b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::LessThan
+            }]
+        );
+    }
+
+    #[test]
+    fn test_less_than_or_equal() {
+        let mut p = Parser::new("a <= b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        let a = Box::new(Ast::Value(Value::Ref("a".to_string())));
+        let b = Box::new(Ast::Value(Value::Ref("b".to_string())));
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Binary {
+                    left: a.clone(),
+                    right: b.clone(),
+                    operator: BinaryOperator::LessThan
+                }),
+                right: Box::new(Ast::Binary {
+                    left: a,
+                    right: b,
+                    operator: BinaryOperator::Equals
+                }),
+                operator: BinaryOperator::Add
+            }]
+        );
+    }
+
+    #[test]
+    fn test_modulo() {
+        let mut p = Parser::new("a % b".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                right: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                operator: BinaryOperator::Modulo
+            }]
+        );
+    }
+
+    #[test]
+    fn test_call_no_args() {
+        let mut p = Parser::new("a()".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Call {
+                what: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                args: vec![]
+            }]
+        )
+    }
+
+    #[test]
+    fn test_call_one_arg() {
+        let mut p = Parser::new("a(1)".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Call {
+                what: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                args: vec![Ast::Value(Value::Int(1))]
+            }]
+        )
+    }
+
+    #[test]
+    fn test_call_two_args() {
+        let mut p = Parser::new("a(1,2)".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Call {
+                what: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                args: vec![Ast::Value(Value::Int(1)), Ast::Value(Value::Int(2))]
+            }]
+        )
+    }
+
+    #[test]
+    fn test_set() {
+        let mut p = Parser::new("x = 0".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Set {
+                name: Box::new(Ast::Value(Value::Ref("x".to_string()))),
+                value: Box::new(Ast::Value(Value::Int(0)))
+            }]
+        );
+    }
+}

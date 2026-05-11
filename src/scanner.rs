@@ -122,6 +122,11 @@ impl Scanner {
             source[start..*index].chars().collect(),
         )])
     }
+
+    pub fn append_stream(&mut self, mut tokens: Vec<Token>) {
+        tokens.reverse();
+        self.buffer.extend(tokens);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

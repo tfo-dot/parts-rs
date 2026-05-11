@@ -1,13 +1,15 @@
 use crate::std::StdModule;
+use crate::value::{NativeFunction, Value};
+use std::collections::HashMap;
 
-use crate::compiler::{OpCode, Value};
+use crate::compiler::OpCode;
 
 #[derive(Clone)]
-struct Frame {
-    registers: [Value; 256],
-    ip: usize,
-    bytecode: Vec<u8>,
-    return_reg: u8,
+pub struct Frame {
+    pub registers: [Value; 256],
+    pub ip: usize,
+    pub bytecode: Vec<u8>,
+    pub return_reg: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,8 +24,10 @@ pub enum Error {
 #[derive(Clone)]
 pub struct VM {
     frames: Vec<Frame>,
-    constants: Vec<Value>,
+    pub constants: Vec<Value>,
     exit_value: Option<Value>,
+    pub patch_table: HashMap<u64, HashMap<u64, Value>>,
+    pub native_functions: Vec<NativeFunction>,
 }
 
 impl VM {
@@ -37,7 +41,24 @@ impl VM {
             }],
             constants,
             exit_value: None,
+            patch_table: HashMap::new(),
+            native_functions: StdModule::get_core().functions,
         }
+    }
+
+    pub fn with_natives(
+        code: Vec<u8>,
+        constants: Vec<Value>,
+        natives: Vec<NativeFunction>,
+    ) -> Self {
+        let mut vm = Self::new(code, constants);
+        vm.native_functions.extend(natives);
+        vm
+    }
+
+    pub fn run_with_frame(&mut self, frame: Frame) -> Result<Option<Value>, Error> {
+        self.frames = vec![frame];
+        self.run()
     }
 
     fn current(&mut self) -> Result<&mut Frame, Error> {
@@ -66,7 +87,7 @@ impl VM {
             }
 
             if let Some(current_frame) = self.frames.last() {
-                if current_frame.ip + 1 > current_frame.bytecode.len() {
+                if current_frame.ip >= current_frame.bytecode.len() {
                     break;
                 }
             }
@@ -98,7 +119,9 @@ impl VM {
                         OpCode::ConstString
                         | OpCode::ConstRef
                         | OpCode::ConstFun
-                        | OpCode::ConstObj => {
+                        | OpCode::ConstObj
+                        | OpCode::ConstAst
+                        | OpCode::ConstParserValue => {
                             let byte = self.read_byte()? as usize;
                             self.current()?.registers[dest] = self.constants[byte].clone();
                         }
@@ -117,7 +140,8 @@ impl VM {
 
                     if self.frames.len() <= 1 {
                         self.exit_value = Some(return_value.clone());
-                        continue;
+                        self.frames.pop();
+                        break;
                     }
 
                     let frame = self.frames.pop().ok_or(Error::FrameUnderflow)?;
@@ -169,12 +193,10 @@ impl VM {
                                 args.push(arg);
                             }
 
-                            // Execute the Rust function
                             let result = (native_fn.call)(args).map_err(|e| {
                                 panic!("Error in native function: {:?}", e);
                             })?;
 
-                            // Store result in the destination register
                             self.current()?.registers[dest_reg as usize] = result;
                         }
                         _ => {
@@ -243,13 +265,19 @@ impl VM {
                     };
 
                     if let Value::Object(obj_ref) = &self.current()?.registers[src_idx] {
-                        // Use .borrow() to read
-                        let value = obj_ref
-                            .borrow()
-                            .get(&hash)
-                            .cloned()
-                            .expect("No object found");
-                        self.current()?.registers[dest] = value;
+                        let val = obj_ref.borrow().get(&hash).cloned();
+
+                        if let Some(v) = val {
+                            self.current()?.registers[dest] = v;
+                        } else if let Some(patched) =
+                            self.patch_table.get(&0).and_then(|p| p.get(&hash))
+                        {
+                            self.current()?.registers[dest] = patched.clone();
+                        } else {
+                            return Err(Error::UnexpectedType);
+                        }
+                    } else {
+                        return Err(Error::UnexpectedType);
                     }
                 }
                 OpCode::SetProperty => {
@@ -265,7 +293,6 @@ impl VM {
                     let new_val = self.current()?.registers[val_idx].clone();
 
                     if let Value::Object(obj_ref) = &self.current()?.registers[obj_idx] {
-                        // Use .borrow_mut() to modify the shared map in place!
                         obj_ref.borrow_mut().insert(hash, new_val);
                     }
                 }
@@ -279,8 +306,7 @@ impl VM {
                     };
 
                     self.current()?.registers[dest] = Value::NativeFun(
-                        StdModule::get_core()
-                            .functions
+                        self.native_functions
                             .iter()
                             .find(|f| {
                                 Value::Hash(Value::String(f.name.to_string()).get_hash()) == hash
@@ -289,6 +315,7 @@ impl VM {
                             .clone(),
                     );
                 }
+                OpCode::ConstAst | OpCode::ConstParserValue => return Err(Error::UnexpectedType),
             }
         }
 
@@ -301,7 +328,6 @@ impl VM {
             Value::Double(raw) => raw.abs() > 0.0,
             Value::Bool(raw) => raw,
             Value::String(raw) => raw.len() > 0,
-            //TODO check if it's true XD
             Value::Ref(_) | Value::Hash(_) => unreachable!(),
             Value::Fun { .. } => true,
             Value::NativeFun(_) => true,
@@ -322,176 +348,5 @@ impl VM {
 
             _ => panic!("UnexpectedType bin"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::VM;
-    use crate::compiler::{OpCode, Value};
-
-    #[test]
-    fn check_inline_const_load() {
-        let code = [
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstInt as u8,
-            //100 as i64 le byte
-            100,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-
-        let mut vm = VM::new(code.to_vec(), vec![]);
-
-        let res = vm.run();
-
-        assert!(res.is_ok_and(|val| val.is_none()));
-        assert_eq!(code.len(), vm.frames.last().unwrap().ip);
-        assert_eq!(vm.frames.last().unwrap().registers[0], Value::Int(100))
-    }
-
-    #[test]
-    fn check_scope_const_load() {
-        let code = [OpCode::Load as u8, 0, OpCode::ConstString as u8, 0];
-
-        let mut vm = VM::new(code.to_vec(), vec![Value::String("Hello".to_string())]);
-
-        let res = vm.run();
-
-        assert!(res.is_ok_and(|val| val.is_none()));
-        assert_eq!(code.len(), vm.frames.last().unwrap().ip);
-        assert_eq!(
-            vm.frames.last().unwrap().registers[0],
-            Value::String("Hello".to_string())
-        )
-    }
-
-    #[test]
-    fn check_double_return() {
-        let code = [OpCode::Return as u8, 0, OpCode::Return as u8, 0];
-
-        let mut vm = VM::new(code.to_vec(), vec![]);
-
-        let res = vm.run();
-
-        assert!(res.is_ok_and(|val| val == Some(Value::Int(0))))
-    }
-
-    #[test]
-    fn check_call_no_args() {
-        //[load @ 0 cosnt @ 0], [Call, return @ 1, func @ 0, 0 args], [return @ 1]
-        let code = vec![
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstFun as u8,
-            0,
-            OpCode::Call as u8,
-            1,
-            0,
-            0,
-            OpCode::Return as u8,
-            1,
-        ];
-
-        let constants = vec![Value::Fun {
-            arity: 0,
-            body: vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                1,
-                OpCode::Return as u8,
-                0,
-            ],
-        }];
-
-        let mut vm = VM::new(code, constants);
-
-        let res = vm.run();
-
-        assert!(res.is_ok_and(|val| val.is_some_and(|deep| deep == Value::Bool(true))))
-    }
-
-    #[test]
-    fn check_call_one_arg() {
-        //[load @ 0 cosnt @ 0], [Call, return @ 1, func @ 0, 1 arg], [return @ 1]
-        let code = vec![
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstFun as u8,
-            0,
-            OpCode::Load as u8,
-            1,
-            OpCode::ConstBool as u8,
-            0,
-            OpCode::Call as u8,
-            2,
-            0,
-            1,
-            1,
-            OpCode::Return as u8,
-            2,
-        ];
-
-        let constants = vec![Value::Fun {
-            arity: 0,
-            body: vec![OpCode::Return as u8, 0],
-        }];
-
-        let mut vm = VM::new(code, constants);
-
-        let res = vm.run();
-
-        assert!(res.is_ok_and(|val| val.is_some_and(|deep| deep == Value::Bool(false))))
-    }
-
-    #[test]
-    fn check_test_binary() {
-        let code = vec![
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstInt as u8,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            OpCode::Load as u8,
-            1,
-            OpCode::ConstInt as u8,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            OpCode::Binary as u8,
-            0,
-            2,
-            0,
-            1,
-            OpCode::Return as u8,
-            2,
-        ];
-
-        let constants = vec![];
-
-        let mut vm = VM::new(code, constants);
-
-        assert!(
-            vm.run()
-                .is_ok_and(|val| val.is_some_and(|deep| deep == Value::Int(2)))
-        )
     }
 }

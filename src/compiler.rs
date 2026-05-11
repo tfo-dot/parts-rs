@@ -1,12 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Display;
+use std::fs;
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::define_opcodes;
 use crate::parser::Ast;
+use crate::parser::ImportType;
+use crate::parser::Parser;
 use crate::parser::Value as ParserValue;
-use crate::{define_opcodes, impl_binary_op, impl_compare_op};
+use crate::value::{NativeFunctionDef, StdDefinition, Value};
 
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -32,6 +36,8 @@ define_opcodes! {
     ConstFun    = 0x05,
     ConstObj    = 0x06,
     ConstReg    = 0x07,
+    ConstAst    = 0x08,
+    ConstParserValue = 0x09,
 
     // Flow Control
     Return      = 0x10,
@@ -47,7 +53,7 @@ define_opcodes! {
     Load        = 0x20,
     GetProperty = 0x21,
     SetProperty = 0x22,
-    LoadNative = 0x23,
+    LoadNative  = 0x23
 }
 
 struct LoopContext {
@@ -59,6 +65,7 @@ struct Context {
     bytecode: Vec<u8>,
 
     scopes: Vec<HashMap<String, u8>>,
+    top_level_names: HashMap<String, u8>,
     next_free_register: u8,
 
     loop_stack: Vec<LoopContext>,
@@ -71,6 +78,7 @@ impl Context {
         return Self {
             bytecode: vec![],
             scopes: vec![HashMap::new()],
+            top_level_names: HashMap::new(),
             next_free_register: 0,
             loop_stack: vec![],
             loaded_natives: HashMap::new(),
@@ -102,395 +110,16 @@ impl Context {
     fn add_local(&mut self, name: String) -> u8 {
         let reg = self.next_free_register;
 
+        if self.scopes.len() == 1 {
+            self.top_level_names.insert(name.clone(), reg);
+        }
+
         if let Some(current) = self.scopes.last_mut() {
             current.insert(name, reg);
             self.next_free_register += 1;
         }
 
         reg
-    }
-}
-
-pub type NativeFn = fn(args: Vec<Value>) -> Result<Value, String>;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Int(i64),
-    Double(f64),
-    Bool(bool),
-    String(String),
-    Ref(String),
-    Fun { arity: u8, body: Vec<u8> },
-    NativeFun(NativeFunction),
-    Object(Rc<RefCell<HashMap<u64, Value>>>),
-    Hash(u64),
-}
-
-#[derive(Clone, Debug)]
-pub struct NativeFunction {
-    pub name: &'static str,
-    pub arity: u8,
-    pub call: NativeFn,
-}
-
-impl PartialEq for NativeFunction {
-    fn eq(&self, other: &Self) -> bool {
-        // We compare the name and arity, not the function pointer address.
-        self.name == other.name && self.arity == other.arity
-    }
-}
-
-#[derive(PartialEq, Clone, Debug)]
-pub struct NativeFunctionDef {
-    pub name: &'static str,
-    pub arity: u8,
-}
-
-#[derive(Clone)]
-pub struct StdDefinition {
-    pub functions: Vec<NativeFunctionDef>,
-}
-
-impl StdDefinition {
-    pub fn get_core() -> Self {
-        use crate::std::StdModule;
-
-        return StdDefinition {
-            functions: {
-                StdModule::get_core()
-                    .functions
-                    .iter()
-                    .map(|f| {
-                        return NativeFunctionDef {
-                            name: f.name,
-                            arity: f.arity,
-                        };
-                    })
-                    .collect()
-            },
-        };
-    }
-}
-
-use std::hash::{Hash, Hasher};
-
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Value::Int(i) => {
-                state.write_u8(0);
-                i.hash(state);
-            }
-            Value::Double(d) => {
-                state.write_u8(1);
-                state.write_u64(d.to_bits());
-            }
-            Value::Bool(b) => {
-                state.write_u8(2);
-                b.hash(state);
-            }
-            Value::String(s) | Value::Ref(s) => {
-                state.write_u8(3);
-                s.hash(state);
-            }
-            Value::Object(obj) => {
-                state.write_u8(4);
-                // Hash the memory address of the allocation
-                let ptr = Rc::as_ptr(obj) as usize;
-                ptr.hash(state);
-            }
-            Value::Fun { .. } | Value::NativeFun(_) => {
-                state.write_u8(4);
-                let ptr = self as *const _ as usize;
-                ptr.hash(state);
-            }
-            Value::Hash(v) => {
-                state.write_u8(5);
-                v.hash(state);
-            }
-        }
-    }
-}
-
-use std::ops::Rem;
-
-impl Rem for Value {
-    type Output = Result<Value, String>;
-
-    fn rem(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (Value::Int(a), Value::Int(b)) => {
-                if b == 0 {
-                    Err("remainder by zero".to_string())
-                } else {
-                    Ok(Value::Int(a % b))
-                }
-            }
-            (l, r) => Err(format!("operation not supported - mod ({:?}, {:?})", l, r)),
-        }
-    }
-}
-
-impl_binary_op!(Add, add, +);
-impl_binary_op!(Sub, sub, -);
-impl_binary_op!(Mul, mul, *);
-impl_binary_op!(Div, div, /);
-
-impl_compare_op!(op_gt, >);
-impl_compare_op!(op_lt, <);
-
-impl Value {
-    pub fn get_hash(&self) -> u64 {
-        match self {
-            Value::Int(i) => *i as u64,
-            Value::String(s) | Value::Ref(s) => {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                s.hash(&mut hasher);
-                hasher.finish()
-            }
-            Value::Bool(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
-            }
-            _ => {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                self.hash(&mut hasher);
-                hasher.finish()
-            }
-        }
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
-            Value::Int(i) => {
-                let mut tmp = vec![0];
-                let mut encoded: Vec<_> = i.to_le_bytes().into();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
-            }
-            Value::Double(d) => {
-                let mut tmp = vec![1];
-                let mut encoded: Vec<_> = d.to_le_bytes().into();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
-            }
-            Value::Bool(b) => vec![2, *b as u8],
-            Value::String(s) => {
-                let mut tmp = vec![3];
-
-                let mut s_size: Vec<_> = s.len().to_le_bytes().into();
-
-                tmp.append(&mut s_size);
-
-                let mut encoded: Vec<_> = s.bytes().collect();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
-            }
-            Value::Fun { arity, body } => {
-                let mut tmp = vec![4];
-
-                tmp.push(*arity);
-
-                let mut b_size: Vec<_> = body.len().to_le_bytes().into();
-
-                tmp.append(&mut b_size);
-
-                let mut body_vec = body.clone();
-
-                tmp.append(&mut body_vec);
-
-                return tmp;
-            }
-            Value::Object(ref_cell) => {
-                let mut tmp = vec![5];
-
-                let obj = ref_cell.borrow();
-
-                tmp.push(obj.len() as u8);
-
-                for (key, value) in obj.iter() {
-                    tmp.push(6);
-
-                    let mut encoded: Vec<_> = key.to_le_bytes().into();
-
-                    tmp.append(&mut encoded);
-
-                    let mut encoded_val = value.encode();
-
-                    tmp.append(&mut encoded_val);
-                }
-
-                return tmp;
-            }
-            Value::Hash(h) => {
-                let mut tmp = vec![6];
-                let mut encoded: Vec<_> = h.to_le_bytes().into();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn decode(raw: Vec<u8>, once: bool, starting_idx: usize) -> (Vec<Value>, usize) {
-        let mut values = vec![];
-
-        let mut idx = starting_idx;
-
-        while idx < raw.len() {
-            match raw[idx] {
-                0 => {
-                    idx += 1;
-
-                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    idx += 8;
-
-                    values.push(Value::Int(i64::from_le_bytes(bytes)));
-                }
-                1 => {
-                    idx += 1;
-
-                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    idx += 8;
-
-                    values.push(Value::Double(f64::from_le_bytes(bytes)));
-                }
-                2 => {
-                    idx += 1;
-
-                    let val = raw[idx];
-
-                    idx += 1;
-
-                    values.push(Value::Bool(val != 0));
-                }
-                3 => {
-                    idx += 1;
-
-                    let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    let len = i64::from_le_bytes(len_bytes);
-
-                    idx += 8;
-
-                    let raw_s = &raw[idx..idx + len as usize];
-
-                    idx += len as usize;
-
-                    values.push(Value::String(String::from_utf8(raw_s.to_vec()).unwrap()));
-                }
-                4 => {
-                    idx += 1;
-
-                    let arity = raw[idx];
-
-                    idx += 1;
-
-                    let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    let len = i64::from_le_bytes(len_bytes);
-
-                    idx += 8;
-
-                    let body = &raw[idx..idx + len as usize];
-
-                    idx += len as usize;
-
-                    values.push(Value::Fun {
-                        arity,
-                        body: body.to_vec(),
-                    });
-                }
-                5 => {
-                    idx += 1;
-
-                    let count = raw[idx];
-
-                    idx += 1;
-
-                    let mut entries = vec![];
-
-                    for _counter in 0..count * 2 {
-                        let (mut temp_vals, temp_idx) =
-                            crate::compiler::Value::decode(raw.clone(), true, idx);
-
-                        idx = temp_idx;
-
-                        entries.append(&mut temp_vals);
-                    }
-
-                    let mut obj: HashMap<u64, Value> = HashMap::new();
-
-                    for chunk in entries.chunks_exact(2).into_iter() {
-                        let key_raw = match chunk[0] {
-                            Value::Hash(h) => h,
-                            _ => unreachable!(),
-                        };
-
-                        obj.insert(key_raw, chunk[1].clone());
-                    }
-
-                    values.push(Value::Object(Rc::new(RefCell::new(obj))));
-                }
-                6 => {
-                    idx += 1;
-
-                    let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    idx += 8;
-
-                    values.push(Value::Hash(u64::from_le_bytes(bytes)));
-                }
-                _ => panic!("Unexpected value type"),
-            }
-
-            if once {
-                break;
-            }
-        }
-        return (values, idx);
-    }
-}
-
-impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        return match (self, other) {
-            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-            (Value::Int(a), Value::Double(b)) => (*a as f64).partial_cmp(b),
-            (Value::Double(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
-            (Value::Double(a), Value::Double(b)) => a.partial_cmp(b),
-            (Value::String(a), Value::String(b)) => a.partial_cmp(b),
-            _ => Some(std::cmp::Ordering::Equal),
-        };
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Int(i) => write!(f, "{}", i),
-            Value::Double(d) => write!(f, "{}", d),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::String(s) => write!(f, "{}", s), // Quoted for clarity
-            Value::Ref(r) => write!(f, "&{}", r),   // Prefixed with & to show it's a ref
-            Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
-            Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
-            Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
-            Value::Hash(h) => write!(f, "#{}", h),
-        }
     }
 }
 
@@ -501,17 +130,27 @@ pub struct Compiler {
     pub constant_pool: Vec<Value>,
     contexts: Vec<Context>,
     std: StdDefinition,
+    module_cache: HashMap<String, Value>,
+    source: PathBuf,
 }
 
 impl Compiler {
-    pub fn new() -> Self {
+    pub fn new(source: PathBuf) -> Self {
         Self {
             contexts: vec![Context::new()],
             constant_pool: vec![],
             errors: vec![],
             had_error: false,
             std: StdDefinition::get_core(),
+            module_cache: HashMap::new(),
+            source,
         }
+    }
+
+    pub fn with_natives(source: PathBuf, natives: Vec<NativeFunctionDef>) -> Self {
+        let mut compiler = Self::new(source);
+        compiler.std.functions.extend(natives);
+        compiler
     }
 
     fn current(&mut self) -> &mut Context {
@@ -526,9 +165,81 @@ impl Compiler {
         return address;
     }
 
+    fn compile_module(&mut self, source: String) -> Value {
+        let full_path = self.source.join(&source);
+        let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
+        let path_str = canonical_path.to_str().unwrap().to_string();
+
+        if let Some(cached) = self.module_cache.get(&path_str) {
+            return cached.clone();
+        }
+
+        let raw_source =
+            fs::read_to_string(&canonical_path).expect("Some error with reading import");
+        let mut p = Parser::new(raw_source);
+        let import_ast = p.parse_all().expect("Got error parser lol");
+
+        let old_source = self.source.clone();
+        self.source = canonical_path.parent().unwrap().to_path_buf();
+
+        self.contexts.push(Context::new());
+
+        for item in import_ast {
+            self.compile(item);
+        }
+
+        // Create the exports object
+        let obj_reg = self.next_free_address();
+        let obj_val = Value::Object(Rc::new(RefCell::new(HashMap::new())));
+        let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
+            Some(idx) => idx,
+            None => {
+                self.constant_pool.push(obj_val);
+                self.constant_pool.len() - 1
+            }
+        };
+
+        self.emit_op(OpCode::Load);
+        self.emit(obj_reg);
+        self.emit_op(OpCode::ConstObj);
+        self.emit(obj_idx as u8);
+
+        let top_level = self.current().top_level_names.clone();
+        for (name, reg) in top_level {
+            let hash = Value::Hash(Value::String(name).get_hash());
+            let const_idx = match self.constant_pool.iter().position(|c| *c == hash) {
+                Some(idx) => idx,
+                None => {
+                    self.constant_pool.push(hash);
+                    self.constant_pool.len() - 1
+                }
+            };
+
+            self.emit_op(OpCode::SetProperty);
+            self.emit(obj_reg);
+            self.emit(const_idx as u8);
+            self.emit(reg);
+        }
+
+        self.emit_op(OpCode::Return);
+        self.emit(obj_reg);
+
+        let ctx = self.contexts.pop().expect("Empty contexts");
+        let fun = Value::Fun {
+            arity: 0,
+            body: ctx.bytecode,
+        };
+
+        self.source = old_source;
+        self.module_cache.insert(path_str, fun.clone());
+        fun
+    }
+
     pub fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<u8>, Vec<Error>> {
         for item in ast {
-            self.compile(item);
+            if item != Ast::Ignore {
+                self.compile(item);
+            }
         }
 
         if self.had_error {
@@ -913,7 +624,7 @@ impl Compiler {
             }
             Ast::ContinueCode => self.compile_continue(),
             Ast::BreakCode => self.compile_break(),
-            Ast::Ignore => unreachable!(),
+            Ast::Ignore => 0,
             Ast::For { condition, body } => {
                 let start = self.current().bytecode.len();
 
@@ -1091,6 +802,60 @@ impl Compiler {
                 }
                 _ => panic!("WrongType"),
             },
+
+            Ast::Import {
+                import_type,
+                import_map,
+                source,
+                alias: _,
+            } => {
+                if import_type == ImportType::Syntax || import_type == ImportType::Translation {
+                    return 0;
+                }
+
+                let module_fun = self.compile_module(source);
+
+                let fun_idx = match self.constant_pool.iter().position(|c| *c == module_fun) {
+                    Some(idx) => idx,
+                    None => {
+                        self.constant_pool.push(module_fun);
+                        self.constant_pool.len() - 1
+                    }
+                };
+
+                let module_reg = self.next_free_address();
+                self.emit_op(OpCode::Load);
+                self.emit(module_reg);
+                self.emit_op(OpCode::ConstFun);
+                self.emit(fun_idx as u8);
+
+                let res_reg = self.next_free_address();
+                self.emit_op(OpCode::Call);
+                self.emit(res_reg);
+                self.emit(module_reg);
+                self.emit(0);
+
+                if let Some(map) = import_map {
+                    for name in map {
+                        let reg = self.current().add_local(name.clone());
+                        let hash = Value::Hash(Value::String(name).get_hash());
+                        let hash_idx = match self.constant_pool.iter().position(|c| *c == hash) {
+                            Some(idx) => idx,
+                            None => {
+                                self.constant_pool.push(hash);
+                                self.constant_pool.len() - 1
+                            }
+                        };
+
+                        self.emit_op(OpCode::GetProperty);
+                        self.emit(reg);
+                        self.emit(res_reg);
+                        self.emit(hash_idx as u8);
+                    }
+                }
+
+                res_reg
+            }
         }
     }
 
@@ -1174,717 +939,5 @@ impl Compiler {
                 return self.convert_const(ParserValue::Object(obj_entries));
             }
         };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use crate::compiler::{OpCode, Value};
-    use crate::parser::Ast;
-    use crate::parser::Value as ParserValue;
-
-    use super::Compiler;
-
-    #[test]
-    fn check_empty() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![]);
-
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap().iter().len(), 0)
-    }
-
-    #[test]
-    fn check_declaration() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Declare {
-            name: "x".to_string(),
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstBool as u8, 0]
-        )
-    }
-
-    #[test]
-    fn check_inline_value() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Int(0))]);
-
-        assert!(res.is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstInt as u8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
-            ]));
-    }
-
-    #[test]
-    fn check_string_value() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::String("parts".to_string()))]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstString as u8, 0]
-        );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
-    }
-
-    #[test]
-    fn check_duplicate_string_value() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![
-            Ast::Value(ParserValue::String("parts".to_string())),
-            Ast::Value(ParserValue::String("parts".to_string())),
-        ]);
-
-        assert!(res.is_ok());
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstString as u8,
-                0
-            ]
-        );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
-    }
-
-    #[test]
-    fn check_multi_string_value() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![
-            Ast::Value(ParserValue::String("parts".to_string())),
-            Ast::Value(ParserValue::String("rust".to_string())),
-            Ast::Value(ParserValue::String("parts".to_string())),
-        ]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstString as u8,
-                1,
-                OpCode::Load as u8,
-                2,
-                OpCode::ConstString as u8,
-                0
-            ]
-        );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
-        assert_eq!(c.constant_pool[1], Value::String("rust".to_string()));
-    }
-
-    #[test]
-    fn check_ref() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            },
-            Ast::Declare {
-                name: "y".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Ref("x".to_string()))),
-            },
-        ]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstReg as u8,
-                0,
-            ]
-        )
-    }
-
-    #[test]
-    fn check_fun_no_args() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec![],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
-        );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 0,
-                body: vec![
-                    OpCode::Load as u8,
-                    0,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    0
-                ]
-            }
-        )
-    }
-
-    #[test]
-    fn check_fun_one_arg() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec!["n".to_string()],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
-        );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 1,
-                body: vec![
-                    OpCode::Load as u8,
-                    1,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    1
-                ]
-            }
-        )
-    }
-
-    #[test]
-    fn check_fun_multiple_args() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec!["n".to_string(), "i".to_string()],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
-        );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 2,
-                body: vec![
-                    OpCode::Load as u8,
-                    2,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    2
-                ]
-            }
-        )
-    }
-
-    #[test]
-    fn check_return() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Return {
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Return as u8,
-                0
-            ]
-        );
-    }
-
-    #[test]
-    fn check_raise() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Return {
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Return as u8,
-                0
-            ]
-        );
-    }
-
-    #[test]
-    fn check_call() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Call {
-            what: Box::new(Ast::Value(ParserValue::String("fib".to_string()))),
-            args: vec![Ast::Value(ParserValue::Int(0))],
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstInt as u8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                OpCode::Call as u8,
-                2,
-                0,
-                1,
-                1,
-            ]
-        );
-    }
-
-    #[test]
-    fn check_binary() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Binary {
-            left: Box::new(Ast::Value(ParserValue::Bool(false))),
-            right: Box::new(Ast::Value(ParserValue::Bool(false))),
-            operator: crate::parser::BinaryOperator::Add,
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Binary as u8,
-                0,
-                2,
-                0,
-                1
-            ]
-        );
-    }
-
-    #[test]
-    fn check_if() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::If {
-            then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
-            else_branch: Some(Box::new(Ast::Value(ParserValue::Bool(false)))),
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                4,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                1,
-                OpCode::JumpBy as u8,
-                4,
-                0,
-                OpCode::Load as u8,
-                2,
-                OpCode::ConstBool as u8,
-                0,
-            ]
-        )
-    }
-
-    #[test]
-    fn check_if_no_else() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::If {
-            then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
-            else_branch: None,
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                4,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                1
-            ]
-        )
-    }
-
-    #[test]
-    fn check_continue() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::For {
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-            body: (Box::new(Ast::ContinueCode)),
-        }]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                6,
-                0,
-                OpCode::JumpBack as u8,
-                11,
-                0,
-                OpCode::JumpBack as u8,
-                14,
-                0
-            ]));
-    }
-    #[test]
-
-    fn check_break() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::For {
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-            body: (Box::new(Ast::BreakCode)),
-        }]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                6,
-                0,
-                OpCode::Jump as u8,
-                14,
-                0,
-                OpCode::JumpBack as u8,
-                14,
-                0
-            ]));
-    }
-
-    #[test]
-    fn check_obj_no_entries() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Object(vec![]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        assert!(
-            c.constant_pool
-                .get(0)
-                .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.borrow().len() == 0
-                } else {
-                    false
-                })
-        )
-    }
-
-    #[test]
-    fn check_obj_with_entries() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Object(vec![(
-            ParserValue::Int(100),
-            ParserValue::Bool(false),
-        )]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        let obj = c.constant_pool.get(0).expect("Expected actual value");
-
-        let mut expected = HashMap::new();
-
-        expected.insert(Value::Int(100).get_hash(), Value::Bool(false));
-
-        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
-    }
-
-    #[test]
-    fn check_arr_no_entries() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::List(vec![]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        assert!(
-            c.constant_pool
-                .get(0)
-                .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.borrow().len() == 0
-                } else {
-                    false
-                })
-        )
-    }
-
-    #[test]
-    fn check_arr_with_entries() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::List(vec![
-            ParserValue::Int(100),
-            ParserValue::Bool(false),
-        ]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        let obj = c.constant_pool.get(0).expect("Expected valid value");
-
-        let mut expected = HashMap::new();
-
-        expected.insert(Value::Int(0).get_hash(), Value::Int(100));
-        expected.insert(Value::Int(1).get_hash(), Value::Bool(false));
-
-        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
-    }
-
-    #[test]
-    fn check_assign_no_declaration() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![Ast::Set {
-            name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
-            value: Box::from(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstBool as u8, 0])
-        );
-    }
-
-    #[test]
-    fn check_assign_with_declaration() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Bool(true))),
-            },
-            Ast::Set {
-                name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
-                value: Box::from(Ast::Value(ParserValue::Bool(false))),
-            },
-        ]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                1,
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0
-            ]));
-    }
-
-    #[test]
-    fn check_assign_with_dot() {
-        let mut c = Compiler::new();
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Object(vec![]))),
-            },
-            Ast::Set {
-                name: Box::from(Ast::Dot {
-                    accessor: Box::new(Ast::Value(ParserValue::Ref("x".to_string()))),
-                    access: Box::new(Ast::Value(ParserValue::Ref("y".to_string()))),
-                }),
-                value: Box::from(Ast::Value(ParserValue::Bool(false))),
-            },
-        ]);
-
-        let hash = Value::Ref("y".to_string()).get_hash();
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstObj as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::SetProperty as u8,
-                0, //Register
-                1, //Const
-                1  //Value register
-            ]));
-
-        assert_eq!(c.constant_pool[1], Value::Hash(hash.try_into().unwrap()))
     }
 }

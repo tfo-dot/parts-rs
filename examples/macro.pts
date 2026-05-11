@@ -1,0 +1,15 @@
+part hello {
+  (@name) => { println("Hello, ", @name); }
+}
+
+hello!{ "tfo" };
+
+part sql {
+  (select @col in @db) => { println("Selecting ", @col, " ", @db); }
+  (@db) => { println("renwikbjuwebiuk"); }
+}
+
+sql!{ select "data" in "XD" };
+
+sql!{ "data" };
+

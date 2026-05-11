@@ -7,5 +7,7 @@ pub mod compiler;
 pub mod vm;
 pub mod disassemble;
 pub mod std;
+pub mod engine;
+pub mod value;
 
 mod utils;

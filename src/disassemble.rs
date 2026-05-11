@@ -1,4 +1,5 @@
-use crate::compiler::{OpCode, Value};
+use crate::compiler::OpCode;
+use crate::value::Value;
 
 pub fn disassemble(code: &[u8], constants: &[Value]) {
     println!("--- Disassembly ---");
@@ -134,6 +135,40 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 "JUMP_BACK", target, jump_offset
             );
             offset + 3
+        }
+        OpCode::GetProperty => {
+            let dest = code[offset + 1];
+            let src = code[offset + 2];
+            let idx = code[offset + 3] as usize;
+            println!(
+                "{:-12} DestReg: {:<3} SrcReg: {:<3} ConstIdx: {} ({})",
+                "GET_PROP",
+                dest,
+                src,
+                idx,
+                constants
+                    .get(idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            );
+            offset + 4
+        }
+        OpCode::SetProperty => {
+            let obj = code[offset + 1];
+            let idx = code[offset + 2] as usize;
+            let src = code[offset + 3];
+            println!(
+                "{:-12} ObjReg: {:<3} ConstIdx: {} ({}) SrcReg: {:<3}",
+                "SET_PROP",
+                obj,
+                idx,
+                constants
+                    .get(idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                src
+            );
+            offset + 4
         }
         _ => {
             println!("{:?}", opcode);

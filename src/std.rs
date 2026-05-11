@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::compiler::{NativeFunction, Value};
+use crate::value::{NativeFunction, Value};
 
 #[derive(Clone)]
 pub struct StdModule {
@@ -214,6 +214,23 @@ impl StdModule {
                             Ok(val) => Ok(Value::String(val)),
                             Err(_) => Err("Some error lol".to_string()),
                         };
+                    },
+                },
+                NativeFunction {
+                    name: "joinStr",
+                    arity: 2,
+                    call: |args| {
+                        let arg_one = match &args[0] {
+                            Value::String(s) => s,
+                            _ => return Err("Expected string lol".to_string()),
+                        };
+
+                        let arg_two = match &args[1] {
+                            Value::String(s) => s,
+                            _ => return Err("Expected string lol".to_string()),
+                        };
+
+                        return Ok(Value::String(format!("{}{}", arg_one, arg_two)));
                     },
                 },
             ],
