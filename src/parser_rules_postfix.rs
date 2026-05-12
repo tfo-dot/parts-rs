@@ -38,7 +38,7 @@ impl PostfixRule {
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Dot {
                         accessor: Box::new(ast),
-                        access: Box::new(parser.parse()?),
+                        access: Box::new(parser.parse_rule("VarExpr")?),
                     })
                 }),
             },

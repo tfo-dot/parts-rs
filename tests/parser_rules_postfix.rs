@@ -260,6 +260,24 @@ mod tests {
     }
 
     #[test]
+    fn test_ufcs_parse() {
+        let mut p = Parser::new("a.f(1)".to_string());
+        let res = p.parse_all();
+        assert!(res.is_ok());
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::Call {
+                what: Box::new(Ast::Dot {
+                    accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
+                    access: Box::new(Ast::Value(Value::Ref("f".to_string())))
+                }),
+                args: vec![Ast::Value(Value::Int(1))]
+            }]
+        );
+    }
+
+    #[test]
     fn test_set() {
         let mut p = Parser::new("x = 0".to_string());
         let res = p.parse_all();

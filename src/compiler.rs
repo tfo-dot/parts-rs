@@ -533,9 +533,16 @@ impl Compiler {
                 0
             }
             Ast::Call { what, args } => {
-                let caller = self.compile(*what);
+                let (caller, final_args) = if let Ast::Dot { accessor, access } = *what {
+                    let mut new_args = vec![*accessor];
+                    new_args.extend(args);
+                    (self.compile(*access), new_args)
+                } else {
+                    (self.compile(*what), args)
+                };
+
                 let mut compiled_args = vec![];
-                for arg in &args {
+                for arg in &final_args {
                     compiled_args.push(self.compile(arg.clone()));
                 }
 
@@ -546,7 +553,7 @@ impl Compiler {
 
                 self.emit(caller);
 
-                self.emit(args.len().try_into().unwrap());
+                self.emit(final_args.len().try_into().unwrap());
 
                 compiled_args.iter().for_each(|arg| self.emit(*arg));
 

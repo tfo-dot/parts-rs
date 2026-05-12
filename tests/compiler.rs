@@ -7,6 +7,7 @@ mod tests {
 
     use parts::compiler::Compiler;
     use parts::compiler::OpCode;
+    use parts::disassemble;
     use parts::parser::Ast;
     use parts::parser::BinaryOperator;
     use parts::parser::Value as ParserValue;
@@ -709,5 +710,36 @@ mod tests {
             ]));
 
         assert_eq!(c.constant_pool[1], Value::Hash(hash.try_into().unwrap()))
+    }
+
+    #[test]
+    fn check_arr_access() {
+        let mut c = Compiler::new("./".into());
+
+        let res = c.compile_all(vec![
+            Ast::Declare {
+                name: "arr".to_string(),
+                value: Box::new(Ast::Value(ParserValue::List(vec![
+                    ParserValue::Int(100),
+                    ParserValue::Bool(false),
+                ]))),
+            },
+            Ast::Dot {
+                accessor: Box::new(Ast::Value(ParserValue::Ref("arr".to_string()))),
+                access: Box::new(Ast::Value(ParserValue::Int(100))),
+            },
+        ]);
+
+        assert!(res.clone().is_ok_and(|out| out
+            == vec![
+                OpCode::Load as u8,
+                0,
+                OpCode::ConstObj as u8,
+                0,
+                OpCode::GetProperty as u8,
+                1, //Register
+                0, //Const
+                1  //Value register
+            ]));
     }
 }
