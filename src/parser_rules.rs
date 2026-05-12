@@ -487,29 +487,17 @@ impl ParserRule {
                     parser.check(Token(TokenType::Operator, "OBJ_START".chars().collect()))
                 }),
                 parse: Arc::new(|parser| {
-                    let mut entries: Vec<(Value, Value)> = vec![];
+                    let mut entries: Vec<(Ast, Ast)> = vec![];
 
                     if !parser.match_operator("OBJ_END") {
                         loop {
-                            let key;
-
-                            if let Ast::Value(key_value) = parser.parse()? {
-                                key = key_value;
-                            } else {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            let key = parser.parse()?;
 
                             if !parser.match_operator("COLON") {
                                 return Err(ParserError::TokenMismatch);
                             }
 
-                            let val;
-
-                            if let Ast::Value(value) = parser.parse()? {
-                                val = value;
-                            } else {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            let val = parser.parse()?;
 
                             entries.push((key, val));
 
@@ -523,7 +511,7 @@ impl ParserRule {
                         }
                     }
 
-                    Ok(Ast::Value(Value::Object(entries)))
+                    Ok(Ast::Object(entries))
                 }),
             },
             ParserRule {

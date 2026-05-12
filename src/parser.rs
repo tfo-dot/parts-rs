@@ -233,6 +233,7 @@ pub enum Ast {
         value: Box<Ast>,
     },
     Value(Value),
+    Object(Vec<(Ast, Ast)>),
     Return {
         value: Box<Ast>,
     },

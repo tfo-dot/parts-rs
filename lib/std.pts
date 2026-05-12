@@ -1,0 +1,9 @@
+"Parts Standard Library Entry Point"
+
+return |>
+    math: import `./std/math.pts`,
+    sys:  import `./std/sys.pts`,
+    str:  import `./std/str.pts`,
+    print: __print,
+    println: __println
+<|;

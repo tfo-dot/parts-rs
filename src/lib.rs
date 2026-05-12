@@ -11,3 +11,9 @@ pub mod engine;
 pub mod value;
 
 mod utils;
+
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "lib/"]
+pub struct Assets;

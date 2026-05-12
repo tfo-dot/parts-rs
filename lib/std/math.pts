@@ -1,0 +1,8 @@
+"Parts Math Module"
+
+return |>
+    sin: __math_sin,
+    cos: __math_cos,
+    rand: __rand,
+    PI: 3.141592653589793
+<|;

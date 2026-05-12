@@ -423,15 +423,9 @@ impl PartialEq for NativeFunction {
     }
 }
 
-#[derive(PartialEq, Clone, Debug)]
-pub struct NativeFunctionDef {
-    pub name: &'static str,
-    pub arity: u8,
-}
-
 #[derive(Clone)]
 pub struct StdDefinition {
-    pub functions: Vec<NativeFunctionDef>,
+    pub functions: Vec<NativeFunction>,
 }
 
 impl StdDefinition {
@@ -439,18 +433,7 @@ impl StdDefinition {
         use crate::std::StdModule;
 
         return StdDefinition {
-            functions: {
-                StdModule::get_core()
-                    .functions
-                    .iter()
-                    .map(|f| {
-                        return NativeFunctionDef {
-                            name: f.name,
-                            arity: f.arity,
-                        };
-                    })
-                    .collect()
-            },
+            functions: StdModule::get_core().functions,
         };
     }
 }

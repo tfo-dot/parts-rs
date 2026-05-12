@@ -88,11 +88,11 @@ mod tests {
 
         assert_eq!(val.len(), 1);
 
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
-            assert_eq!(inner_obj.clone(), Vec::<(Value, Value)>::new());
+        if let Some(Ast::Object(inner_obj)) = val.first() {
+            assert_eq!(inner_obj.len(), 0);
         } else {
             panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
+                "Expected Ast::Object at 0, got {:?}",
                 val.first()
             );
         }
@@ -107,14 +107,14 @@ mod tests {
         let val = res.unwrap();
         assert_eq!(val.len(), 1);
 
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
+        if let Some(Ast::Object(inner_obj)) = val.first() {
             assert_eq!(
                 inner_obj.clone(),
-                vec![(Value::Ref("expectFalse".to_string()), Value::Bool(false))]
+                vec![(Ast::Value(Value::Ref("expectFalse".to_string())), Ast::Value(Value::Bool(false)))]
             );
         } else {
             panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
+                "Expected Ast::Object at 0, got {:?}",
                 val.first()
             );
         }
@@ -129,17 +129,17 @@ mod tests {
         let val = res.unwrap();
         assert_eq!(val.len(), 1);
 
-        if let Some(Ast::Value(Value::Object(inner_obj))) = val.first() {
+        if let Some(Ast::Object(inner_obj)) = val.first() {
             assert_eq!(
                 inner_obj.clone(),
                 vec![
-                    (Value::Ref("expectFalse".to_string()), Value::Bool(false)),
-                    (Value::Ref("expectTrue".to_string()), Value::Bool(true))
+                    (Ast::Value(Value::Ref("expectFalse".to_string())), Ast::Value(Value::Bool(false))),
+                    (Ast::Value(Value::Ref("expectTrue".to_string())), Ast::Value(Value::Bool(true)))
                 ]
             );
         } else {
             panic!(
-                "Expected Ast::Value(Value::Object) at 0, got {:?}",
+                "Expected Ast::Object at 0, got {:?}",
                 val.first()
             );
         }

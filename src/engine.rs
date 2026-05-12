@@ -1,6 +1,6 @@
 use crate::compiler::Compiler;
 use crate::parser::Parser;
-use crate::value::{NativeFunction, NativeFunctionDef, Value};
+use crate::value::{NativeFunction, Value};
 use crate::vm::VM;
 use std::path::PathBuf;
 
@@ -16,20 +16,20 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        Self {
+        Engine {
             import_path: std::env::current_dir().unwrap_or_default(),
-            natives: Vec::new(),
+            natives: vec![],
         }
     }
 
     pub fn with_import_path(path: PathBuf) -> Self {
-        Self {
+        Engine {
             import_path: path,
-            natives: Vec::new(),
+            natives: vec![],
         }
     }
 
-    pub fn register_function(
+    pub fn register_native(
         &mut self,
         name: &'static str,
         arity: u8,
@@ -48,16 +48,7 @@ impl Engine {
             .parse_all()
             .map_err(|e| format!("Parser error: {:?}", e))?;
 
-        let native_defs: Vec<NativeFunctionDef> = self
-            .natives
-            .iter()
-            .map(|f| NativeFunctionDef {
-                name: f.name,
-                arity: f.arity,
-            })
-            .collect();
-
-        let mut compiler = Compiler::with_natives(self.import_path.clone(), native_defs);
+        let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
         let bytecode = compiler.compile_all(ast).map_err(|e| {
             format!(
                 "Compiler error: {}",

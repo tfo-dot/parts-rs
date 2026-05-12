@@ -1,3 +1,7 @@
+use crate::parser::ImportType;
+use crate::parser::Parser;
+use crate::parser::Value as ParserValue;
+use crate::value::{NativeFunction, StdDefinition, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -7,10 +11,6 @@ use std::rc::Rc;
 
 use crate::define_opcodes;
 use crate::parser::Ast;
-use crate::parser::ImportType;
-use crate::parser::Parser;
-use crate::parser::Value as ParserValue;
-use crate::value::{NativeFunctionDef, StdDefinition, Value};
 
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -147,7 +147,7 @@ impl Compiler {
         }
     }
 
-    pub fn with_natives(source: PathBuf, natives: Vec<NativeFunctionDef>) -> Self {
+    pub fn with_natives(source: PathBuf, natives: Vec<NativeFunction>) -> Self {
         let mut compiler = Self::new(source);
         compiler.std.functions.extend(natives);
         compiler
@@ -166,21 +166,44 @@ impl Compiler {
     }
 
     fn compile_module(&mut self, source: String) -> Value {
-        let full_path = self.source.join(&source);
-        let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
-        let path_str = canonical_path.to_str().unwrap().to_string();
+        let (raw_source, path_str, new_source_path) = if source.starts_with("@std/") || self.source.starts_with("@std") {
+            let virtual_path = if source.starts_with("@std/") {
+                PathBuf::from(&source[5..])
+            } else {
+                self.source.join(&source)
+            };
+
+            // Normalize the virtual path (remove @std prefix if present for lookup)
+            let mut internal_path = virtual_path.clone();
+            if internal_path.starts_with("@std") {
+                internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
+            }
+            
+            let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
+            
+            let file = crate::Assets::get(internal_path_str)
+                .expect(&format!("Standard library module not found: {} (original: {})", internal_path_str, source));
+            let content = String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
+            
+            let path_str = format!("@std/{}", internal_path_str);
+            (content, path_str, PathBuf::from("@std").join(internal_path_str).parent().unwrap().to_path_buf())
+        } else {
+            let full_path = self.source.join(&source);
+            let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
+            let path_str = canonical_path.to_str().unwrap().to_string();
+            let content = fs::read_to_string(&canonical_path).expect(&format!("Some error with reading import: {}", path_str));
+            (content, path_str, canonical_path.parent().unwrap().to_path_buf())
+        };
 
         if let Some(cached) = self.module_cache.get(&path_str) {
             return cached.clone();
         }
 
-        let raw_source =
-            fs::read_to_string(&canonical_path).expect("Some error with reading import");
         let mut p = Parser::new(raw_source);
         let import_ast = p.parse_all().expect("Got error parser lol");
 
         let old_source = self.source.clone();
-        self.source = canonical_path.parent().unwrap().to_path_buf();
+        self.source = new_source_path;
 
         self.contexts.push(Context::new());
 
@@ -302,12 +325,14 @@ impl Compiler {
     }
 
     fn compile_const(&mut self, value: ParserValue) {
-        match value {
-            ParserValue::Int(_) => self.emit_op(OpCode::ConstInt),
-            ParserValue::Double(_) => self.emit_op(OpCode::ConstDouble),
-            ParserValue::Bool(_) => self.emit_op(OpCode::ConstBool),
-            ParserValue::String(_) => self.emit_op(OpCode::ConstString),
-            ParserValue::Ref(ref name) => {
+        let converted = self.convert_const(value.clone());
+
+        match &converted {
+            Value::Int(_) => self.emit_op(OpCode::ConstInt),
+            Value::Double(_) => self.emit_op(OpCode::ConstDouble),
+            Value::Bool(_) => self.emit_op(OpCode::ConstBool),
+            Value::String(_) => self.emit_op(OpCode::ConstString),
+            Value::Ref(name) => {
                 if let Some(reg) = self.current().resolve_local(name) {
                     self.emit_op(OpCode::ConstReg);
                     self.emit(reg);
@@ -316,14 +341,18 @@ impl Compiler {
 
                 self.emit_op(OpCode::ConstRef);
             }
-            ParserValue::Fun { .. } => self.emit_op(OpCode::ConstFun),
-            ParserValue::Object(_) | ParserValue::List(_) => self.emit_op(OpCode::ConstObj),
+            Value::Fun { .. } => self.emit_op(OpCode::ConstFun),
+            Value::Object(_) => self.emit_op(OpCode::ConstObj),
+            Value::NativeFun(_) => {
+                // For native functions, we treat them as constants if they are used as such
+                self.emit_op(OpCode::ConstFun);
+            }
+            Value::Hash(_) => {
+                 self.emit_op(OpCode::ConstInt); // Should probably have a ConstHash but use Int for now
+            }
         };
 
-        let converted = self.convert_const(value.clone());
-
-        let temp = self.compile_value(converted.clone());
-
+        let temp = self.compile_value(converted);
         self.emit_vec(temp);
     }
 
@@ -340,6 +369,17 @@ impl Compiler {
                 _ => vec![],
             },
             Ast::Declare { name: _, value } => self.find_stds(*value),
+            Ast::Object(entries) => entries
+                .iter()
+                .map(|(k, v)| {
+                    let mut res = self.find_stds(k.clone());
+                    res.extend(self.find_stds(v.clone()));
+                    res
+                })
+                .flatten()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect(),
             Ast::Raise { value } | Ast::Return { value } => self.find_stds(*value),
             Ast::Call { what, args } => self
                 .find_stds(*what)
@@ -407,45 +447,10 @@ impl Compiler {
             Value::Double(d) => d.to_le_bytes().into(),
             Value::Bool(b) => vec![b as u8],
             Value::Ref(r) => {
-                let mut register: Option<&u8> = None;
-                let std = self.std.clone();
-
-                for scope in &self.current().scopes {
-                    if scope.contains_key(&r) {
-                        register = Some(scope.get(&r).unwrap());
-                        break;
-                    }
+                if let Some(reg) = self.current().resolve_local(&r) {
+                    return vec![reg];
                 }
-
-                if let Some(_std_func) = std.functions.iter().find(|f| f.name == r) {
-                    if let Some(cached_reg) = self.current().loaded_natives.get(&r) {
-                        return vec![*cached_reg];
-                    }
-
-                    let reg = self.next_free_address();
-
-                    let hash = Value::Hash(Value::String(r.clone()).get_hash());
-
-                    let idx = match self.constant_pool.iter().position(|c| *c == hash) {
-                        Some(hash_idx) => hash_idx,
-                        None => {
-                            self.constant_pool.push(hash);
-
-                            self.constant_pool.len() - 1
-                        }
-                    };
-
-                    self.current().loaded_natives.insert(r.clone(), reg);
-
-                    return vec![OpCode::LoadNative as u8, reg, idx as u8];
-                }
-
-                let reg = match register {
-                    Some(reg) => *reg,
-                    None => panic!("UndefinedResolve - {}", r),
-                };
-
-                vec![reg]
+                panic!("UndefinedResolve - {}", r);
             }
             Value::Fun { arity: _, body: _ }
             | Value::Object(_)
@@ -474,13 +479,14 @@ impl Compiler {
                         self.compile_const(raw);
                     }
                     _ => {
-                        let dest = self.compile(*value);
+                        let res = self.compile(*value);
 
                         self.emit_op(OpCode::Load);
                         self.emit(address);
 
                         self.emit_op(OpCode::ConstReg);
-                        self.emit(dest);
+
+                        self.emit(res);
                     }
                 };
 
@@ -526,6 +532,46 @@ impl Compiler {
                 self.compile_const(val);
                 reg
             }
+            Ast::Object(entries) => {
+                let obj_reg = self.next_free_address();
+                let obj_val = Value::Object(Rc::new(RefCell::new(HashMap::new())));
+                let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
+                    Some(idx) => idx,
+                    None => {
+                        self.constant_pool.push(obj_val);
+                        self.constant_pool.len() - 1
+                    }
+                };
+
+                self.emit_op(OpCode::Load);
+                self.emit(obj_reg);
+                self.emit_op(OpCode::ConstObj);
+                self.emit(obj_idx as u8);
+
+                for (key_ast, val_ast) in entries {
+                    let hash_idx = if let Ast::Value(val) = key_ast {
+                        let converted = self.convert_const(val);
+                        let hash = Value::Hash(converted.get_hash());
+                        match self.constant_pool.iter().position(|c| *c == hash) {
+                            Some(idx) => idx,
+                            None => {
+                                self.constant_pool.push(hash);
+                                self.constant_pool.len() - 1
+                            }
+                        }
+                    } else {
+                        panic!("Dynamic keys in object literals not yet supported");
+                    };
+
+                    let val_reg = self.compile(val_ast);
+
+                    self.emit_op(OpCode::SetProperty);
+                    self.emit(obj_reg);
+                    self.emit(hash_idx as u8);
+                    self.emit(val_reg);
+                }
+                obj_reg
+            }
             Ast::Return { value } | Ast::Raise { value } => {
                 let reg = self.compile(*value);
                 self.emit_op(OpCode::Return);
@@ -533,10 +579,21 @@ impl Compiler {
                 0
             }
             Ast::Call { what, args } => {
-                let (caller, final_args) = if let Ast::Dot { accessor, access } = *what {
-                    let mut new_args = vec![*accessor];
-                    new_args.extend(args);
-                    (self.compile(*access), new_args)
+                let (caller, final_args) = if let Ast::Dot { accessor, access } = *what.clone() {
+                    let is_ufcs = if let Ast::Value(ParserValue::Ref(ref name)) = *access {
+                        self.current().resolve_local(name).is_some()
+                            || self.std.functions.iter().any(|f| f.name == name)
+                    } else {
+                        false
+                    };
+
+                    if is_ufcs {
+                        let mut new_args = vec![*accessor];
+                        new_args.extend(args);
+                        (self.compile(*access), new_args)
+                    } else {
+                        (self.compile(*what), args)
+                    }
                 } else {
                     (self.compile(*what), args)
                 };
@@ -675,7 +732,7 @@ impl Compiler {
                 let iter = Ast::Declare {
                     name: "@iter".to_string(),
                     value: Box::new(Ast::Call {
-                        what: Box::new(Ast::Value(ParserValue::Ref("iter_of".to_string()))),
+                        what: Box::new(Ast::Value(ParserValue::Ref("__iter_of".to_string()))),
                         args: vec![*iterable],
                     }),
                 };
@@ -683,14 +740,14 @@ impl Compiler {
                 let iter_ref = Ast::Value(ParserValue::Ref("@iter".to_string()));
 
                 let has_next = Ast::Call {
-                    what: Box::new(Ast::Value(ParserValue::Ref("has_next".to_string()))),
+                    what: Box::new(Ast::Value(ParserValue::Ref("__has_next".to_string()))),
                     args: vec![iter_ref.clone()],
                 };
 
                 let decl = Ast::Declare {
                     name: var_name,
                     value: Box::new(Ast::Call {
-                        what: Box::new(Ast::Value(ParserValue::Ref("get_next".to_string()))),
+                        what: Box::new(Ast::Value(ParserValue::Ref("__get_next".to_string()))),
                         args: vec![iter_ref],
                     }),
                 };
@@ -735,13 +792,15 @@ impl Compiler {
                         value: value,
                     });
                 }
+
+                let compiled_accessor = self.compile(*accessor);
+
                 self.emit_op(OpCode::GetProperty);
                 let reg = self.next_free_address();
                 self.emit(reg);
 
                 if let Ast::Value(val) = *access {
-                    let accessor = self.compile(*accessor);
-                    self.emit(accessor);
+                    self.emit(compiled_accessor);
                     let converted = self.convert_const(val);
                     let access = converted.get_hash();
 
@@ -902,7 +961,12 @@ impl Compiler {
             ParserValue::Double(dbl) => Value::Double(dbl),
             ParserValue::Bool(bol) => Value::Bool(bol),
             ParserValue::String(string) => Value::String(string),
-            ParserValue::Ref(reference) => Value::Ref(reference),
+            ParserValue::Ref(reference) => {
+                if let Some(native) = self.std.functions.iter().find(|f| f.name == reference) {
+                    return Value::NativeFun(native.clone());
+                }
+                Value::Ref(reference)
+            }
             ParserValue::Fun { args, body } => {
                 self.contexts.push(Context::new());
 

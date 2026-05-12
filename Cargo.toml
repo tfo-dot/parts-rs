@@ -3,6 +3,11 @@ name = "parts"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["parts-macros"]
+
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
 xxhash-rust = {version = "0.8.15", features = ["xxh3"]}
+parts-macros = { path = "./parts-macros" }
+rust-embed = "8.4"

@@ -1,0 +1,6 @@
+"Parts String Module"
+
+return |>
+    len: __str_len,
+    join: __joinStr
+<|;
