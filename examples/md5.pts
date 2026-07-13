@@ -1,0 +1,21 @@
+let std = import `@std/std.pts`;
+
+let math = std.math;
+let byte = std.byte;
+
+let MAXU = 4294967295;
+
+let val = byte.rotate_left(212, 2, 0);
+
+let i = 0;
+let K = |><|;
+"for i < 63 {
+	K[i] = 0;
+	i = i + 1;
+}"
+
+for item in K {
+	std.println(item)
+}
+std.println(K);
+std.println(val);

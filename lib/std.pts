@@ -4,6 +4,7 @@ return |>
     math: import `./std/math.pts`,
     sys:  import `./std/sys.pts`,
     str:  import `./std/str.pts`,
+    byte:  import `./std/byte.pts`,
     print: __print,
     println: __println
 <|;

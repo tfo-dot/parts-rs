@@ -19,6 +19,7 @@ pub enum Error {
     UnexpectedTypeLoad(OpCode),
     UnexpectedTypeCall,
     UnexpectedType,
+    PropertyNotFound(u64),
 }
 
 #[derive(Clone)]
@@ -274,7 +275,7 @@ impl VM {
                         {
                             self.current()?.registers[dest] = patched.clone();
                         } else {
-                            return Err(Error::UnexpectedType);
+                            return Err(Error::PropertyNotFound(hash));
                         }
                     } else {
                         return Err(Error::UnexpectedType);

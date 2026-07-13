@@ -50,10 +50,7 @@ pub fn __iter_of(val: Value) -> Result<Value, String> {
                 Value::Object(map.clone()),
             );
 
-            hash_map.insert(
-                Value::String("index".to_string()).get_hash(),
-                Value::Int(0),
-            );
+            hash_map.insert(Value::String("index".to_string()).get_hash(), Value::Int(0));
 
             Ok(Value::Object(Rc::new(RefCell::new(hash_map))))
         }
@@ -223,11 +220,147 @@ pub fn __math_cos(val: Value) -> Result<Value, String> {
 }
 
 #[native_function]
+pub fn __math_floor(val: Value) -> Result<Value, String> {
+    match val {
+        Value::Double(d) => Ok(Value::Double(d.floor())),
+        _ => Err("Expected number".to_string()),
+    }
+}
+
+#[native_function]
+pub fn __math_pow(exp: Value, pow: Value) -> Result<Value, String> {
+    let i1 = match exp {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match pow {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1.pow(i2 as u32)));
+}
+
+#[native_function]
 pub fn __str_len(val: Value) -> Result<Value, String> {
     match val {
         Value::String(s) => Ok(Value::Int(s.len() as i64)),
         _ => Err("Expected string".to_string()),
     }
+}
+
+#[native_function]
+pub fn __byte_or(left: Value, right: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1 | i2));
+}
+
+#[native_function]
+pub fn __byte_and(left: Value, right: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1 & i2));
+}
+
+#[native_function]
+pub fn __byte_xor(left: Value, right: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1 ^ i2));
+}
+
+#[native_function]
+pub fn __byte_not(left: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(!i1));
+}
+
+#[native_function]
+pub fn __byte_shl(left: Value, right: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1 << i2));
+}
+
+#[native_function]
+pub fn __byte_shr(left: Value, right: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    return Ok(Value::Int(i1 >> i2));
+}
+
+#[native_function]
+pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Value, String> {
+    let i1 = match left {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let i2 = match right {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let mask_raw = match mask {
+        Value::Int(i) => i,
+        _ => return Err("Expected int lol".to_string()),
+    };
+
+    let x = match mask_raw {
+        0 => (i1 as u8).rotate_left(i2 as u32) as i64,
+        1 => (i1 as u16).rotate_left(i2 as u32) as i64,
+        2 => (i1 as u32).rotate_left(i2 as u32) as i64,
+        3 => (i1 as u64).rotate_left(i2 as u32) as i64,
+        _ => return Err("Value out of expected range".to_string()),
+    };
+
+    return Ok(Value::Int(x));
 }
 
 #[derive(Clone)]
@@ -251,7 +384,16 @@ impl StdModule {
                 __joinStr,
                 __math_sin,
                 __math_cos,
+                __math_floor,
+                __math_pow,
                 __str_len,
+                __byte_and,
+                __byte_not,
+                __byte_xor,
+                __byte_shr,
+                __byte_shl,
+                __byte_or,
+                __byte_rotate_left,
             ],
         }
     }
