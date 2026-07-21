@@ -67,3 +67,35 @@ macro_rules! impl_compare_op {
         }
     };
 }
+
+#[macro_export]
+macro_rules! impl_bitwise_op {
+    ($trait:ident, $method:ident, $op:tt) => {
+        impl std::ops::$trait for Value {
+            type Output = Result<Value, String>;
+
+            fn $method(self, rhs: Self) -> Self::Output {
+                match (self, rhs) {
+                    (Value::Ref(_), _) | (_, Value::Ref(_)) => 
+                        Err("got reference, expected value".to_string()),
+
+                    // Czyste liczby całkowite
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a $op b)),
+                    
+                    // Rzutowanie Double na i64 przed operacją bitową (kluczowe dla wyników z np. math.pow)
+                    (Value::Double(a), Value::Double(b)) => Ok(Value::Int((a as i64) $op (b as i64))),
+                    (Value::Int(a), Value::Double(b)) => Ok(Value::Int(a $op (b as i64))),
+                    (Value::Double(a), Value::Int(b)) => Ok(Value::Int((a as i64) $op b)),
+
+                    // Opcjonalna obsługa Bool
+                    (Value::Int(a), Value::Bool(b)) => Ok(Value::Int(a $op (if b { 1 } else { 0 }))),
+                    (Value::Bool(a), Value::Int(b)) => Ok(Value::Int((if a { 1 } else { 0 }) $op b)),
+                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Int((if a { 1 } else { 0 }) $op (if b { 1 } else { 0 }))),
+
+                    // Jeśli wpadnie np. Value::Hash(X), wyrzucimy ładny błąd zamiast panikowania maszyny wirtualnej!
+                    (l, r) => Err(format!("Bitwise operation {} not supported for types: {:?} and {:?}", stringify!($op), l, r)),
+                }
+            }
+        }
+    };
+}

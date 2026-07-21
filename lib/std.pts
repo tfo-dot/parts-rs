@@ -1,0 +1,11 @@
+"Parts Standard Library Entry Point"
+
+return |>
+    math: import `./std/math.pts`,
+    sys:  import `./std/sys.pts`,
+    str:  import `./std/str.pts`,
+    rotate_left: __byte_rotate_left,
+    len: __obj_len,
+    print: __print,
+    println: __println
+<|;

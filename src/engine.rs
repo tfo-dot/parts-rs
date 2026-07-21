@@ -1,6 +1,7 @@
 use crate::compiler::Compiler;
+use crate::emitter::Emitter;
 use crate::parser::Parser;
-use crate::value::{NativeFunction, NativeFunctionDef, Value};
+use crate::value::{NativeFunction, Value};
 use crate::vm::VM;
 use std::path::PathBuf;
 
@@ -16,26 +17,30 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        Self {
+        Engine {
             import_path: std::env::current_dir().unwrap_or_default(),
-            natives: Vec::new(),
+            natives: vec![],
         }
     }
 
     pub fn with_import_path(path: PathBuf) -> Self {
-        Self {
+        Engine {
             import_path: path,
-            natives: Vec::new(),
+            natives: vec![],
         }
     }
 
-    pub fn register_function(
+    pub fn register_native(
         &mut self,
         name: &'static str,
         arity: u8,
         call: fn(args: Vec<Value>) -> Result<Value, String>,
     ) {
-        self.natives.push(NativeFunction { name, arity, call });
+        self.natives.push(NativeFunction {
+            name,
+            arity,
+            call: std::rc::Rc::new(call),
+        });
     }
 
     pub fn execute(&self, source: &str) -> Result<Option<Value>, String> {
@@ -48,17 +53,8 @@ impl Engine {
             .parse_all()
             .map_err(|e| format!("Parser error: {:?}", e))?;
 
-        let native_defs: Vec<NativeFunctionDef> = self
-            .natives
-            .iter()
-            .map(|f| NativeFunctionDef {
-                name: f.name,
-                arity: f.arity,
-            })
-            .collect();
-
-        let mut compiler = Compiler::with_natives(self.import_path.clone(), native_defs);
-        let bytecode = compiler.compile_all(ast).map_err(|e| {
+        let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
+        let ast = compiler.compile_all(ast).map_err(|e| {
             format!(
                 "Compiler error: {}",
                 e.iter()
@@ -67,6 +63,8 @@ impl Engine {
                     .join("\n")
             )
         })?;
+
+        let bytecode = Emitter {}.emit(ast);
 
         let mut vm = VM::with_natives(bytecode, compiler.constant_pool, self.natives.clone());
         let value = vm.run().map_err(|e| format!("VM error: {:?}", e))?;

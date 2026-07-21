@@ -1,4 +1,4 @@
-use crate::compiler::OpCode;
+use crate::emitter::OpCode;
 use crate::value::Value;
 
 pub fn disassemble(code: &[u8], constants: &[Value]) {
@@ -64,9 +64,15 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             let ret = code[offset + 1];
             let func = code[offset + 2];
             let args_count = code[offset + 3];
+            let mut args = vec![];
+
+            for i in 0..args_count {
+                args.push(code[offset + 4 + i as usize]);
+            }
+
             println!(
-                "{:-12} RetReg: {:<3} FuncReg: {:<3} Args: {}",
-                "CALL", ret, func, args_count
+                "{:-12} RetReg: {:<3} FuncReg: {:<3} Args: {:?}",
+                "CALL", ret, func, args
             );
             offset + 4 + args_count as usize
         }
@@ -100,7 +106,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             println!("{:-12} Reg: {}", "RETURN", code[offset + 1]);
             offset + 2
         }
-        OpCode::Jump | OpCode::JumpBy => {
+        OpCode::Jump => {
             let jump_offset = u16::from_le_bytes([code[offset + 1], code[offset + 2]]) as usize;
             let mut target = jump_offset;
             let name = if opcode == OpCode::Jump {
@@ -113,28 +119,13 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             offset + 3
         }
 
-        OpCode::JumpIf | OpCode::JumpNot => {
+        OpCode::JumpNot => {
             let reg = code[offset + 1];
             let jump_offset = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
             let target = offset + 4 + jump_offset;
-            let name = if opcode == OpCode::JumpIf {
-                "JUMP_IF"
-            } else {
-                "JUMP_NOT"
-            };
+            let name = "JUMP_NOT";
             println!("{:-12} Reg: {:<3} Target: {:04}", name, reg, target);
             offset + 4
-        }
-
-        OpCode::JumpBack => {
-            let jump_offset = u16::from_le_bytes([code[offset + 1], code[offset + 2]]) as usize;
-            // JumpBack moves the IP backwards from the start of the next instruction
-            let target = (offset + 3).saturating_sub(jump_offset);
-            println!(
-                "{:-12} {:04} (backwards: {})",
-                "JUMP_BACK", target, jump_offset
-            );
-            offset + 3
         }
         OpCode::GetProperty => {
             let dest = code[offset + 1];
@@ -169,6 +160,59 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 src
             );
             offset + 4
+        }
+        OpCode::GetPropertyDyn => {
+            let dest = code[offset + 1];
+            let src = code[offset + 2];
+            let idx = code[offset + 3] as usize;
+            println!(
+                "{:-12} DestReg: {:<3} SrcReg: {:<3} ConstIdx: {} ({})",
+                "GET_PROPD",
+                dest,
+                src,
+                idx,
+                constants
+                    .get(idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            );
+            offset + 4
+        }
+        OpCode::SetPropertyDyn => {
+            let obj = code[offset + 1];
+            let idx = code[offset + 2] as usize;
+            let src = code[offset + 3];
+            println!(
+                "{:-12} ObjReg: {:<3} ConstIdx: {} ({}) SrcReg: {:<3}",
+                "SET_PROPD",
+                obj,
+                idx,
+                constants
+                    .get(idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                src
+            );
+            offset + 4
+        }
+        OpCode::LoadGlobal => {
+            let reg = code[offset + 1];
+            let dest = code[offset + 2];
+            println!("{:-12} Reg: {:<3} Dest: {:<3}", "LOAD", reg, dest);
+
+            offset + 3
+        }
+        OpCode::Inc => {
+            let src = code[offset+1];
+            println!("{:-12} Src: {:<3}", "INC", src);
+
+            offset + 2
+        }
+        OpCode::Dec => {
+            let src = code[offset+1];
+            println!("{:-12} Src: {:<3}", "DEC", src);
+
+            offset + 2
         }
         _ => {
             println!("{:?}", opcode);

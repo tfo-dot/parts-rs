@@ -1,13 +1,14 @@
 use core::fmt::Result as FmtResult;
 use core::fmt::{Debug, Formatter};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
-use crate::scanner::ScannerError;
+use crate::scanner::{ScannerError, Span};
 use crate::scanner::{Token, TokenType};
 
 type BaseRuleFn = Box<dyn Fn(&char) -> bool>;
 type RuleFn = Box<dyn Fn(&str) -> bool>;
-type ProcessFn = Box<dyn Fn(&HashMap<String, String>, &str) -> Result<Vec<Token>, ScannerError>>;
+type ProcessFn =
+    Box<dyn Fn(&FxHashMap<String, String>, &str, Span) -> Result<Vec<Token>, ScannerError>>;
 
 pub struct ScannerRule {
     pub result: TokenType,
@@ -15,7 +16,7 @@ pub struct ScannerRule {
     pub rule: Option<RuleFn>,
     pub process: Option<ProcessFn>,
     pub skip: bool,
-    pub mappings: HashMap<String, String>,
+    pub mappings: FxHashMap<String, String>,
     pub valid_chars: Vec<char>,
 }
 
@@ -42,16 +43,21 @@ impl ScannerRule {
                 result: TokenType::Operator,
                 base_rule: None,
                 rule: None,
-                process: Some(Box::new(|mappings, runs| {
+                process: Some(Box::new(|mappings, runs, span| {
                     let token_value: String = runs.chars().collect();
 
                     if let Some(name) = mappings.get(&token_value) {
-                        return Ok(vec![Token(TokenType::Operator, name.chars().collect())]);
+                        return Ok(vec![Token {
+                            kind: TokenType::Operator,
+                            lexeme: name.clone(),
+                            span: span,
+                        }]);
                     }
 
                     let mut ret_tokens = Vec::new();
                     let mut offset = 0;
                     let mut temp_slice = &token_value[..];
+                    let mut current_span = span;
 
                     while offset != token_value.len() {
                         if temp_slice.is_empty() {
@@ -62,8 +68,13 @@ impl ScannerRule {
 
                         if let Some(name) = mappings.get(temp_slice) {
                             offset += temp_slice.len();
-                            ret_tokens.push(Token(TokenType::Operator, name.chars().collect()));
+                            ret_tokens.push(Token {
+                                kind: TokenType::Operator,
+                                lexeme: name.clone(),
+                                span: current_span, // replace with actual length
+                            });
                             temp_slice = &token_value[offset..];
+                            current_span.column += temp_slice.chars().count();
                         } else {
                             temp_slice = &temp_slice[..temp_slice.len() - 1];
                         }
@@ -91,6 +102,8 @@ impl ScannerRule {
                     ("@", "AT"),
                     ("!", "BANG"),
                     ("=", "EQUALS"),
+                    ("&", "BIT_AND"),
+                    ("|", "BIT_OR"),
                     ("|>", "OBJ_START"),
                     ("<|", "OBJ_END"),
                     ("==", "EQUALITY"),
@@ -98,14 +111,17 @@ impl ScannerRule {
                     (">", "MORE_THAN"),
                     ("<=", "LESS_EQ"),
                     (">=", "MORE_EQ"),
-                    ("=>", "ARROW_LEFT")
+                    ("=>", "ARROW_LEFT"),
+                    ("^", "BIT_XOR"),
+                    ("<<", "LEFT_SHIFT"),
+                    (">>", "RIGHT_SHIFT"),
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
                 valid_chars: vec![
                     '+', '-', '/', '*', ';', '[', ']', '(', ')', '{', '}', '.', ':', ',', '|', '&',
-                    '>', '<', '!', '#', '-', '=', '?', '%', '@',
+                    '>', '<', '!', '#', '-', '=', '?', '%', '@', '^',
                 ],
             }, // --- TokenNumber Rule ---
             ScannerRule {
@@ -114,7 +130,7 @@ impl ScannerRule {
                 rule: Some(Box::new(|r| r.chars().filter(|&c| c == '.').count() <= 1)),
                 process: None,
                 skip: false,
-                mappings: HashMap::new(),
+                mappings: FxHashMap::default(),
                 valid_chars: vec![],
             },
             // --- TokenKeyword Rule ---
@@ -124,14 +140,17 @@ impl ScannerRule {
                     (*r >= 'a' && *r <= 'z') || (*r >= 'A' && *r <= 'Z') || *r == '_'
                 })),
                 rule: None,
-                process: Some(Box::new(|mappings, runs| {
-                    let mut token = Token(TokenType::Keyword, runs.chars().collect());
-                    let value_str: String = token.1.iter().collect();
+                process: Some(Box::new(|mappings, runs, span| {
+                    let mut token = Token {
+                        kind: TokenType::Keyword,
+                        lexeme: runs.to_string(),
+                        span: span,
+                    };
 
-                    if mappings.contains_key(&value_str) {
-                        token.1 = value_str.to_uppercase().chars().collect();
+                    if mappings.contains_key(&token.lexeme) {
+                        token.lexeme = token.lexeme.to_uppercase();
                     } else {
-                        token.0 = TokenType::Identifier;
+                        token.kind = TokenType::Identifier;
                     }
 
                     Ok(vec![token])
@@ -156,7 +175,7 @@ impl ScannerRule {
                     ("continue", ""),
                     ("translation", ""),
                     ("in", ""),
-                    ("part", "")
+                    ("part", ""),
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -170,7 +189,7 @@ impl ScannerRule {
                 rule: None,
                 process: None,
                 skip: true,
-                mappings: HashMap::new(),
+                mappings: FxHashMap::default(),
                 valid_chars: vec![],
             },
             // --- TokenString Rule ---
@@ -182,29 +201,27 @@ impl ScannerRule {
                         || runs.chars().collect::<Vec<_>>().first()
                             != runs.chars().collect::<Vec<_>>().last()
                 })),
-                process: Some(Box::new(|_mappings, runs| {
+                process: Some(Box::new(|_mappings, runs, span| {
                     if runs.len() < 2 {
                         return Err(ScannerError::UnterminatedString);
                     }
 
-                    let left_side = runs.chars().nth(0).unwrap();
-                    let right_side = runs.chars().nth(runs.len() - 1).unwrap();
+                    let bytes = runs.as_bytes();
+                    let left_side = bytes[0] as char;
+                    let right_side = bytes[bytes.len() - 1] as char;
 
-                    if left_side == '"' && right_side != '"' {
-                        return Err(ScannerError::UnterminatedString);
-                    }
-
-                    if left_side == '`' && right_side != '`' {
+                    if (left_side == '"' && right_side != '"')
+                        || (left_side == '`' && right_side != '`')
+                    {
                         return Err(ScannerError::UnterminatedString);
                     }
 
                     if left_side != '"' && left_side != '`' {
-                        return Err(ScannerError::UnknownToken);
+                        return Err(ScannerError::UnknownToken(left_side));
                     }
 
-                    // Get the content inside the quotes
                     let content = &runs[1..runs.len() - 1];
-                    let mut unescaped = Vec::new();
+                    let mut unescaped = String::with_capacity(content.len());
                     let mut i = 0;
 
                     while i < content.len() {
@@ -212,30 +229,31 @@ impl ScannerRule {
                             if i + 1 >= content.len() {
                                 return Err(ScannerError::InvalidEscape);
                             }
-                            // Handle escape sequences
                             match content.chars().nth(i + 1).unwrap() {
                                 '"' => unescaped.push('"'),
                                 '\\' => unescaped.push('\\'),
                                 'n' => unescaped.push('\n'),
                                 't' => unescaped.push('\t'),
                                 'r' => unescaped.push('\r'),
-                                'b' => unescaped.push('\x08'), // Backspace
-                                'f' => unescaped.push('\x0C'), // Formfeed
-                                _other => {
-                                    return Err(ScannerError::InvalidEscape);
-                                }
+                                'b' => unescaped.push('\x08'),
+                                'f' => unescaped.push('\x0C'),
+                                _ => return Err(ScannerError::InvalidEscape),
                             }
-                            i += 2; // Skip \ and the escaped char
+                            i += 2;
                         } else {
                             unescaped.push(content.chars().nth(i).unwrap());
-                            i += 1; // Skip this char
+                            i += 1;
                         }
                     }
 
-                    Ok(vec![Token(TokenType::String, unescaped)])
+                    Ok(vec![Token {
+                        kind: TokenType::String,
+                        lexeme: unescaped,
+                        span: span,
+                    }])
                 })),
                 skip: false,
-                mappings: HashMap::new(),
+                mappings: FxHashMap::default(),
                 valid_chars: vec![],
             },
         ]

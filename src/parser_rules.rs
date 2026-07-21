@@ -1,6 +1,6 @@
 use crate::{
     parser::{Ast, Error as ParserError, ImportType, MacroArm, Parser, Value},
-    scanner::{Token, TokenType},
+    scanner::{Span, Token, TokenType},
 };
 use std::{fmt, sync::Arc};
 
@@ -30,12 +30,9 @@ impl ParserRule {
             ParserRule {
                 id: "ImportStmt".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "IMPORT".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("IMPORT")),
                 parse: Arc::new(|parser| {
                     let mut import_type = ImportType::Regular;
-                    let mut import_map = None;
 
                     if parser.match_keyword("SYNTAX") {
                         import_type = ImportType::Syntax;
@@ -43,57 +40,39 @@ impl ParserRule {
                         import_type = ImportType::Translation;
                     }
 
+                    let mut import_map = None;
                     if parser.match_operator("LEFT_BRACE") {
-                        let mut identifiers: Vec<String> = vec![];
+                        let mut identifiers = Vec::new();
 
-                        if !parser
-                            .check(Token(TokenType::Operator, "RIGHT_BRACE".chars().collect()))
-                        {
+                        if !parser.match_operator("RIGHT_BRACE") {
                             loop {
-                                let identifier = parser.advance()?;
-
-                                if identifier.0 != TokenType::Identifier {
-                                    return Err(ParserError::TokenMismatch);
-                                }
-
-                                identifiers.push(identifier.1.iter().collect());
+                                let identifier = parser.expect_kind(TokenType::Identifier)?;
+                                identifiers.push(identifier.lexeme);
 
                                 if !parser.match_operator("COMMA") {
                                     break;
                                 }
                             }
 
-                            if !parser.match_operator("RIGHT_BRACE") {
-                                return Err(ParserError::TokenMismatch);
-                            }
-
-                            if !parser.match_keyword("FROM") {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            parser.expect_operator("RIGHT_BRACE")?;
                         }
 
+                        parser.expect_keyword("FROM")?;
                         import_map = Some(identifiers)
                     }
 
-                    let source_token = parser.advance()?;
-
-                    if source_token.0 != TokenType::String {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    let source_token = parser.expect_kind(TokenType::String)?;
 
                     let mut alias = None;
                     if parser.match_keyword("AS") {
-                        let alias_token = parser.advance()?;
-                        if alias_token.0 != TokenType::Identifier {
-                            return Err(ParserError::TokenMismatch);
-                        }
-                        alias = Some(alias_token.1.iter().collect());
+                        let alias_token = parser.expect_kind(TokenType::Identifier)?;
+                        alias = Some(alias_token.lexeme.to_string());
                     }
 
                     Ok(Ast::Import {
                         import_type,
                         import_map,
-                        source: source_token.1.iter().collect::<String>(),
+                        source: source_token.lexeme,
                         alias,
                     })
                 }),
@@ -101,86 +80,68 @@ impl ParserRule {
             ParserRule {
                 id: "UseStmt".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "USE".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("USE")),
                 parse: Arc::new(|parser| {
                     let import_type = if parser.match_keyword("SYNTAX") {
                         ImportType::Syntax
                     } else if parser.match_keyword("TRANSLATION") {
                         ImportType::Translation
                     } else {
-                        return Err(ParserError::TokenMismatch);
+                        return Err(ParserError::TokenMismatch(
+                            Token {
+                                kind: TokenType::Keyword,
+                                lexeme: "SYNTAX | TRANSLATION".to_string(),
+                                span: Span { line: 0, column: 0 },
+                            },
+                            parser.peek()?,
+                        ));
                     };
 
-                    let source_token = parser.advance()?;
-                    if source_token.0 != TokenType::String {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    let source_token = parser.expect_kind(TokenType::String)?;
 
-                    if !parser.match_keyword("AS") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_keyword("AS")?;
 
-                    let alias_token = parser.advance()?;
-                    if alias_token.0 != TokenType::Identifier {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    let alias_token = parser.expect_kind(TokenType::Identifier)?;
 
                     Ok(Ast::Import {
                         import_type,
                         import_map: None,
-                        source: source_token.1.iter().collect(),
-                        alias: Some(alias_token.1.iter().collect()),
+                        source: source_token.lexeme.to_string(),
+                        alias: Some(alias_token.lexeme.to_string()),
                     })
                 }),
             },
             ParserRule {
                 id: "LetStmt".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "LET".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("LET")),
                 parse: Arc::new(|parser| {
-                    let identifier = parser.advance()?;
-
-                    if identifier.0 != TokenType::Identifier {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    let identifier = parser.expect_kind(TokenType::Identifier)?;
 
                     let initial_value = if parser.match_operator("LEFT_PAREN") {
                         let token = parser.peek()?;
 
-                        let mut args: Vec<String> = vec![];
+                        let mut args = Vec::new();
 
-                        if token.0 != TokenType::Operator
-                            && token.1 != "RIGHT_PAREN".chars().collect::<Vec<char>>()
+                        if token.kind != TokenType::Operator
+                            && token.lexeme != "RIGHT_PAREN".to_string()
                         {
                             loop {
-                                let arg = parser.advance()?;
+                                let arg = parser.expect_kind(TokenType::Identifier)?;
 
-                                if arg.0 != TokenType::Identifier {
-                                    return Err(ParserError::TokenMismatch);
-                                }
-
-                                args.push(arg.1.iter().collect());
+                                args.push(arg.lexeme.to_string());
 
                                 if parser.match_operator("COMMA") {
                                     continue;
                                 }
 
-                                if parser.check(Token(
-                                    TokenType::Operator,
-                                    "RIGHT_PAREN".chars().collect(),
-                                )) {
+                                if parser.check_operator("RIGHT_PAREN") {
                                     break;
                                 }
                             }
                         }
 
-                        if !parser.match_operator("RIGHT_PAREN") {
-                            return Err(ParserError::TokenMismatch);
-                        }
+                        parser.expect_operator("RIGHT_PAREN")?;
 
                         let body = if parser.match_operator("EQUALS") {
                             let value = Box::new(parser.parse()?);
@@ -195,15 +156,12 @@ impl ParserRule {
                             body: Box::new(body),
                         })
                     } else {
-                        if !parser.match_operator("EQUALS") {
-                            return Err(ParserError::TokenMismatch);
-                        }
-
+                        parser.expect_operator("EQUALS")?;
                         parser.parse()?
                     };
 
                     Ok(Ast::Declare {
-                        name: identifier.1.iter().collect(),
+                        name: identifier.lexeme.to_string(),
                         value: Box::new(initial_value),
                     })
                 }),
@@ -211,45 +169,24 @@ impl ParserRule {
             ParserRule {
                 id: "FunExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, vec!['F', 'U', 'N']))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("FUN")),
                 parse: Arc::new(|parser| {
-                    if !parser.match_operator("LEFT_PAREN") {
-                        return Err(ParserError::TokenMismatch);
-                    }
-
-                    let token = parser.peek()?;
+                    parser.expect_operator("LEFT_PAREN")?;
 
                     let mut args: Vec<String> = vec![];
 
-                    if token.0 != TokenType::Operator
-                        && token.1 != "RIGHT_PAREN".chars().collect::<Vec<char>>()
-                    {
+                    if !parser.check_operator("RIGHT_PAREN") {
                         loop {
-                            let arg = parser.advance()?;
+                            let arg = parser.expect_kind(TokenType::Identifier)?;
+                            args.push(arg.lexeme.to_string());
 
-                            if arg.0 != TokenType::Identifier {
-                                return Err(ParserError::TokenMismatch);
-                            }
-
-                            args.push(arg.1.iter().collect());
-
-                            if parser.match_operator("COMMA") {
-                                continue;
-                            }
-
-                            if parser
-                                .check(Token(TokenType::Operator, "RIGHT_PAREN".chars().collect()))
-                            {
+                            if !parser.match_operator("COMMA") {
                                 break;
                             }
                         }
                     }
 
-                    if !parser.match_operator("RIGHT_PAREN") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("RIGHT_PAREN")?;
 
                     let body = if parser.match_operator("EQUALS") {
                         Ast::Return {
@@ -268,7 +205,7 @@ impl ParserRule {
             ParserRule {
                 id: "IfExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| parser.check(Token(TokenType::Keyword, vec!['I', 'F']))),
+                rule: Arc::new(|parser| parser.check_keyword("IF")),
                 parse: Arc::new(|parser| {
                     let condition = parser.parse()?;
                     let then_branch = parser.parse()?;
@@ -288,26 +225,30 @@ impl ParserRule {
             ParserRule {
                 id: "ForExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, vec!['F', 'O', 'R']))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("FOR")),
                 parse: Arc::new(|parser| {
                     let condition = parser.parse()?;
 
-                    return if parser.match_keyword("IN") {
-                        return if let Ast::Value(Value::Ref(ref ref_val)) = condition {
+                    if parser.match_keyword("IN") {
+                        if let Ast::Value(Value::Ref(ref_val)) = condition {
                             let iter = parser.parse()?;
-
                             let body = parser.parse()?;
 
                             Ok(Ast::ForEach {
                                 iterable: Box::new(iter),
-                                var_name: ref_val.to_string(),
+                                var_name: ref_val,
                                 body: Box::new(body),
                             })
                         } else {
-                            return Err(ParserError::TokenMismatch);
-                        };
+                            Err(ParserError::TokenMismatch(
+                                Token {
+                                    kind: TokenType::Keyword,
+                                    lexeme: "".to_string(),
+                                    span: Span { column: 0, line: 0 },
+                                },
+                                parser.peek()?,
+                            ))
+                        }
                     } else {
                         let body = parser.parse()?;
 
@@ -315,24 +256,18 @@ impl ParserRule {
                             condition: Box::new(condition),
                             body: Box::new(body),
                         })
-                    };
+                    }
                 }),
             },
             ParserRule {
                 id: "BlockExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LEFT_BRACE".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LEFT_BRACE")),
                 parse: Arc::new(|parser| {
                     let mut body: Vec<Ast> = vec![];
 
                     loop {
-                        let token = parser.peek()?;
-
-                        if token.0 == TokenType::Operator
-                            && token.1 == "RIGHT_BRACE".chars().collect::<Vec<char>>()
-                        {
+                        if parser.check_operator("RIGHT_BRACE") {
                             break;
                         }
 
@@ -342,31 +277,15 @@ impl ParserRule {
                         }
                     }
 
-                    if !parser.match_operator("RIGHT_BRACE") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("RIGHT_BRACE")?;
 
                     Ok(Ast::Block { code: body })
                 }),
             },
             ParserRule {
-                id: "RaiseExpr".to_string(),
-                advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "RAISE".chars().collect()))
-                }),
-                parse: Arc::new(|parser| {
-                    Ok(Ast::Raise {
-                        value: Box::new(parser.parse()?),
-                    })
-                }),
-            },
-            ParserRule {
                 id: "ReturnExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "RETURN".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("RETURN")),
                 parse: Arc::new(|parser| {
                     Ok(Ast::Return {
                         value: Box::new(parser.parse()?),
@@ -376,106 +295,94 @@ impl ParserRule {
             ParserRule {
                 id: "Break".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "BREAK".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("BREAK")),
                 parse: Arc::new(|_parser| Ok(Ast::BreakCode)),
             },
             ParserRule {
                 id: "Continue".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "CONTINUE".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("CONTINUE")),
                 parse: Arc::new(|_parser| Ok(Ast::ContinueCode)),
             },
             ParserRule {
                 id: "TrueExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "TRUE".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("TRUE")),
                 parse: Arc::new(|_parser| Ok(Ast::Value(Value::Bool(true)))),
             },
             ParserRule {
                 id: "FalseExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "FALSE".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("FALSE")),
                 parse: Arc::new(|_parser| Ok(Ast::Value(Value::Bool(false)))),
             },
             ParserRule {
                 id: "NumExpr".to_string(),
                 advance_token: false,
-                rule: Arc::new(|parser| {
-                    parser.peek().unwrap_or(Token(TokenType::Special, vec![])).0
-                        == TokenType::Number
-                }),
+                rule: Arc::new(|parser| parser.check_kind(TokenType::Number)),
                 parse: Arc::new(|parser| {
                     let raw = parser.advance()?;
 
-                    match raw.1.iter().filter(|&c| *c == '.').count() {
+                    match raw.lexeme.chars().filter(|c| *c == '.').count() {
                         0 => {
-                            let parsed: i64 = raw
-                                .1
-                                .iter()
-                                .collect::<String>()
-                                .parse()
-                                .map_err(|_err| ParserError::TokenMismatch)?;
+                            let parsed: i64 = raw.lexeme.parse().map_err(|_err| {
+                                ParserError::TokenMismatch(
+                                    Token {
+                                        kind: TokenType::Number,
+                                        lexeme: "".to_string(),
+                                        span: Span { line: 0, column: 0 },
+                                    },
+                                    parser.peek().unwrap(),
+                                )
+                            })?;
                             Ok(Ast::Value(Value::Int(parsed)))
                         }
                         1 => {
-                            let parsed: f64 = raw
-                                .1
-                                .iter()
-                                .collect::<String>()
-                                .parse()
-                                .map_err(|_err| ParserError::TokenMismatch)?;
+                            let parsed: f64 = raw.lexeme.parse().map_err(|_err| {
+                                ParserError::TokenMismatch(
+                                    Token {
+                                        kind: TokenType::Number,
+                                        lexeme: "".to_string(),
+                                        span: Span { line: 0, column: 0 },
+                                    },
+                                    parser.peek().unwrap(),
+                                )
+                            })?;
                             Ok(Ast::Value(Value::Double(parsed)))
                         }
-                        _ => Err(ParserError::TokenMismatch),
+                        _ => Err(ParserError::TokenMismatch(
+                            Token {
+                                kind: TokenType::Number,
+                                lexeme: "".to_string(),
+                                span: Span { line: 0, column: 0 },
+                            },
+                            parser.peek()?,
+                        )),
                     }
                 }),
             },
             ParserRule {
                 id: "StringExpr".to_string(),
                 advance_token: false,
-                rule: Arc::new(|parser| {
-                    parser.peek().unwrap_or(Token(TokenType::Special, vec![])).0
-                        == TokenType::String
-                }),
-                parse: Arc::new(|parser| {
-                    Ok(Ast::Value(Value::String(
-                        parser.advance()?.1.iter().collect::<String>(),
-                    )))
-                }),
+                rule: Arc::new(|parser| parser.check_kind(TokenType::String)),
+                parse: Arc::new(|parser| Ok(Ast::Value(Value::String(parser.advance()?.lexeme)))),
             },
             ParserRule {
                 id: "VarExpr".to_string(),
                 advance_token: false,
-                rule: Arc::new(|parser| {
-                    parser.peek().unwrap_or(Token(TokenType::Special, vec![])).0
-                        == TokenType::Identifier
-                }),
+                rule: Arc::new(|parser| parser.check_kind(TokenType::Identifier)),
                 parse: Arc::new(|parser| {
-                    Ok(Ast::Value(Value::Ref(
-                        parser.advance()?.1.iter().collect::<String>(),
-                    )))
+                    Ok(Ast::Value(Value::Ref(parser.advance()?.lexeme.to_string())))
                 }),
             },
             ParserRule {
                 id: "GroupExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LEFT_PAREN".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LEFT_PAREN")),
                 parse: Arc::new(|parser| {
                     let val = parser.parse()?;
 
-                    if !parser.match_operator("RIGHT_PAREN") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("RIGHT_PAREN")?;
 
                     Ok(val)
                 }),
@@ -483,33 +390,17 @@ impl ParserRule {
             ParserRule {
                 id: "ObjExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "OBJ_START".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("OBJ_START")),
                 parse: Arc::new(|parser| {
-                    let mut entries: Vec<(Value, Value)> = vec![];
+                    let mut entries: Vec<(Ast, Ast)> = vec![];
 
                     if !parser.match_operator("OBJ_END") {
                         loop {
-                            let key;
+                            let key = parser.parse()?;
 
-                            if let Ast::Value(key_value) = parser.parse()? {
-                                key = key_value;
-                            } else {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            parser.expect_operator("COLON")?;
 
-                            if !parser.match_operator("COLON") {
-                                return Err(ParserError::TokenMismatch);
-                            }
-
-                            let val;
-
-                            if let Ast::Value(value) = parser.parse()? {
-                                val = value;
-                            } else {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            let val = parser.parse()?;
 
                             entries.push((key, val));
 
@@ -518,66 +409,22 @@ impl ParserRule {
                             }
                         }
 
-                        if !parser.match_operator("OBJ_END") {
-                            return Err(ParserError::TokenMismatch);
-                        }
+                        parser.expect_operator("OBJ_END")?;
                     }
 
-                    Ok(Ast::Value(Value::Object(entries)))
-                }),
-            },
-            ParserRule {
-                id: "ArrExpr".to_string(),
-                advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LEFT_BRACKET".chars().collect()))
-                }),
-                parse: Arc::new(|parser| {
-                    let mut entries: Vec<Value> = vec![];
-
-                    if !parser.match_operator("RIGHT_BRACKET") {
-                        loop {
-                            let value;
-
-                            if let Ast::Value(temp_value) = parser.parse()? {
-                                value = temp_value;
-                            } else {
-                                return Err(ParserError::TokenMismatch);
-                            }
-
-                            entries.push(value);
-
-                            if !parser.match_operator("COMMA") {
-                                break;
-                            }
-                        }
-
-                        if !parser.match_operator("RIGHT_BRACKET") {
-                            return Err(ParserError::TokenMismatch);
-                        }
-                    }
-
-                    Ok(Ast::Value(Value::List(entries)))
+                    Ok(Ast::Object(entries))
                 }),
             },
             ParserRule {
                 id: "MacroDefinition".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Keyword, "PART".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_keyword("PART")),
                 parse: Arc::new(|parser| {
-                    let macro_name = parser.advance()?;
-
-                    if macro_name.0 != TokenType::Identifier {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    let macro_name = parser.expect_kind(TokenType::Identifier)?;
 
                     let mut arms: Vec<MacroArm> = vec![];
 
-                    if !parser.match_operator("LEFT_BRACE") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("LEFT_BRACE")?;
 
                     loop {
                         if parser.match_operator("RIGHT_BRACE") {
@@ -590,23 +437,23 @@ impl ParserRule {
                         };
 
                         loop {
-                            if !parser.match_operator("LEFT_PAREN") {
-                                return Err(ParserError::TokenMismatch);
-                            }
+                            parser.expect_operator("LEFT_PAREN")?;
 
                             loop {
                                 if parser.match_operator("AT") {
-                                    if parser.peek()?.0 == TokenType::Identifier {
+                                    if parser.peek()?.kind == TokenType::Identifier {
                                         let mut temp = parser.advance()?;
 
-                                        let mut tmp_vec = vec!['@'];
-
-                                        tmp_vec.append(&mut temp.1);
-
-                                        temp.1 = tmp_vec;
+                                        temp.lexeme = format!("@{}", temp.lexeme);
 
                                         current_arm.pattern.push(temp);
                                         continue;
+                                    } else {
+                                        current_arm.pattern.push(Token {
+                                            kind: TokenType::Operator,
+                                            lexeme: "AT".to_string(),
+                                            span: Span { line: 0, column: 0 },
+                                        });
                                     }
                                 }
 
@@ -620,30 +467,50 @@ impl ParserRule {
                             break;
                         }
 
-                        if !parser.match_operator("ARROW_LEFT") {
-                            return Err(ParserError::TokenMismatch);
-                        }
+                        parser.expect_operator("ARROW_LEFT")?;
+                        parser.expect_operator("LEFT_BRACE")?;
 
-                        if !parser.match_operator("LEFT_BRACE") {
-                            return Err(ParserError::TokenMismatch);
-                        }
+                        let mut brace_depth = 0;
 
                         loop {
                             if parser.match_operator("RIGHT_BRACE") {
-                                break;
+                                if brace_depth == 0 {
+                                    break;
+                                } else {
+                                    brace_depth -= 1;
+                                    current_arm.expansion.push(Token {
+                                        kind: TokenType::Operator,
+                                        lexeme: "RIGHT_BRACE".to_string(),
+                                        span: Span { line: 0, column: 0 },
+                                    });
+                                    continue;
+                                }
+                            }
+
+                            if parser.match_operator("LEFT_BRACE") {
+                                brace_depth += 1;
+                                current_arm.expansion.push(Token {
+                                    kind: TokenType::Operator,
+                                    lexeme: "LEFT_BRACE".to_string(),
+                                    span: Span { line: 0, column: 0 },
+                                });
+                                continue;
                             }
 
                             if parser.match_operator("AT") {
-                                if parser.peek()?.0 == TokenType::Identifier {
+                                if parser.peek()?.kind == TokenType::Identifier {
                                     let mut temp = parser.advance()?;
 
-                                    let mut tmp_vec = vec!['@'];
-
-                                    tmp_vec.append(&mut temp.1);
-
-                                    temp.1 = tmp_vec;
+                                    temp.lexeme = format!("@{}", temp.lexeme);
 
                                     current_arm.expansion.push(temp);
+                                    continue;
+                                } else {
+                                    current_arm.expansion.push(Token {
+                                        kind: TokenType::Operator,
+                                        lexeme: "AT".to_string(),
+                                        span: Span { line: 0, column: 0 },
+                                    });
                                     continue;
                                 }
                             }
@@ -662,9 +529,7 @@ impl ParserRule {
             ParserRule {
                 id: "SemicolonSkip".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "SEMICOLON".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("SEMICOLON")),
                 parse: Arc::new(|_parser| Ok(Ast::Ignore)),
             },
         ]

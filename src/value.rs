@@ -1,8 +1,9 @@
 use crate::impl_binary_op;
+use crate::impl_bitwise_op;
 use crate::impl_compare_op;
 
+use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::rc::Rc;
 
@@ -11,11 +12,11 @@ pub enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
-    String(String),
-    Ref(String),
+    String(Rc<String>),
+    Ref(Rc<String>),
     Fun { arity: u8, body: Vec<u8> },
     NativeFun(NativeFunction),
-    Object(Rc<RefCell<HashMap<u64, Value>>>),
+    Object(Rc<RefCell<FxHashMap<u64, Value>>>),
     Hash(u64),
 }
 
@@ -36,9 +37,13 @@ impl Hash for Value {
                 state.write_u8(2);
                 b.hash(state);
             }
-            Value::String(s) | Value::Ref(s) => {
+            Value::String(s) => {
                 state.write_u8(3);
-                s.hash(state);
+                s.as_str().hash(state);
+            }
+            Value::Ref(s) => {
+                state.write_u8(3);
+                s.as_str().hash(state);
             }
             Value::Object(obj) => {
                 state.write_u8(4);
@@ -86,17 +91,17 @@ impl Value {
                 }
 
                 use crate::vm::{Frame, VM};
-                let mut registers = [const { Value::Int(0) }; 256];
-                for (i, arg) in args.into_iter().enumerate() {
-                    registers[i] = arg;
-                }
 
                 let mut vm = VM::new(vec![], constants);
 
+                for (i, arg) in args.into_iter().enumerate() {
+                    vm.stack[i] = arg;
+                }
+
                 vm.run_with_frame(Frame {
-                    registers,
+                    pointer: 0,
                     ip: 0,
-                    bytecode: body.clone(),
+                    bytecode: Rc::new(body.to_vec()),
                     return_reg: 0,
                 })
                 .map_err(|e| format!("VM Error: {:?}", e))
@@ -119,7 +124,7 @@ impl Value {
         match self {
             Value::Int(i) => *i as u64,
             Value::String(s) | Value::Ref(s) => {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                let mut hasher = FxHasher::default();
                 s.hash(&mut hasher);
                 hasher.finish()
             }
@@ -131,158 +136,112 @@ impl Value {
                 }
             }
             _ => {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                let mut hasher = FxHasher::default();
                 self.hash(&mut hasher);
                 hasher.finish()
             }
         }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self, buffer: &mut Vec<u8>) {
         match self {
             Value::Int(i) => {
-                let mut tmp = vec![0];
-                let mut encoded: Vec<_> = i.to_le_bytes().into();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
+                buffer.push(0);
+                buffer.extend_from_slice(&i.to_le_bytes());
             }
             Value::Double(d) => {
-                let mut tmp = vec![1];
-                let mut encoded: Vec<_> = d.to_le_bytes().into();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
+                buffer.push(1);
+                buffer.extend_from_slice(&d.to_le_bytes());
             }
-            Value::Bool(b) => vec![2, *b as u8],
+            Value::Bool(b) => {
+                buffer.push(2);
+                buffer.push(*b as u8);
+            }
             Value::String(s) => {
-                let mut tmp = vec![3];
-
-                let mut s_size: Vec<_> = s.len().to_le_bytes().into();
-
-                tmp.append(&mut s_size);
-
-                let mut encoded: Vec<_> = s.bytes().collect();
-
-                tmp.append(&mut encoded);
-
-                return tmp;
+                buffer.push(3);
+                buffer.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buffer.extend_from_slice(s.as_bytes());
             }
             Value::Fun { arity, body } => {
-                let mut tmp = vec![4];
-
-                tmp.push(*arity);
-
-                let mut b_size: Vec<_> = body.len().to_le_bytes().into();
-
-                tmp.append(&mut b_size);
-
-                let mut body_vec = body.clone();
-
-                tmp.append(&mut body_vec);
-
-                return tmp;
+                buffer.push(4);
+                buffer.push(*arity);
+                buffer.extend_from_slice(&(body.len() as u64).to_le_bytes());
+                buffer.extend_from_slice(body);
             }
             Value::Object(ref_cell) => {
-                let mut tmp = vec![5];
-
+                buffer.push(5);
                 let obj = ref_cell.borrow();
-
-                tmp.push(obj.len() as u8);
+                buffer.push(obj.len() as u8);
 
                 for (key, value) in obj.iter() {
-                    tmp.push(6);
-
-                    let mut encoded: Vec<_> = key.to_le_bytes().into();
-
-                    tmp.append(&mut encoded);
-
-                    let mut encoded_val = value.encode();
-
-                    tmp.append(&mut encoded_val);
+                    buffer.push(6);
+                    buffer.extend_from_slice(&key.to_le_bytes());
+                    value.encode(buffer);
                 }
-
-                return tmp;
             }
             Value::Hash(h) => {
-                let mut tmp = vec![6];
-                let mut encoded: Vec<_> = h.to_le_bytes().into();
+                buffer.push(6);
+                buffer.extend_from_slice(&h.to_le_bytes());
+            }
+            Value::NativeFun(f) => {
+                buffer.push(7);
+                let name_bytes = f.name.as_bytes();
 
-                tmp.append(&mut encoded);
-
-                return tmp;
+                buffer.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buffer.extend_from_slice(name_bytes);
             }
             _ => unreachable!(),
         }
     }
 
-    pub fn decode(raw: Vec<u8>, once: bool, starting_idx: usize) -> (Vec<Value>, usize) {
+    pub fn decode(raw: &[u8], once: bool, starting_idx: usize) -> (Vec<Value>, usize) {
         let mut values = vec![];
-
         let mut idx = starting_idx;
 
         while idx < raw.len() {
             match raw[idx] {
                 0 => {
                     idx += 1;
-
                     let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
                     idx += 8;
-
                     values.push(Value::Int(i64::from_le_bytes(bytes)));
                 }
                 1 => {
                     idx += 1;
-
                     let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
                     idx += 8;
-
                     values.push(Value::Double(f64::from_le_bytes(bytes)));
                 }
                 2 => {
                     idx += 1;
-
                     let val = raw[idx];
-
                     idx += 1;
-
                     values.push(Value::Bool(val != 0));
                 }
                 3 => {
                     idx += 1;
-
                     let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    let len = i64::from_le_bytes(len_bytes);
-
+                    // Zgodnie z formatem zapisu, wczytujemy u64, potem as usize
+                    let len = u64::from_le_bytes(len_bytes) as usize;
                     idx += 8;
 
-                    let raw_s = &raw[idx..idx + len as usize];
-
-                    idx += len as usize;
-
-                    values.push(Value::String(String::from_utf8(raw_s.to_vec()).unwrap()));
+                    let raw_s = &raw[idx..idx + len];
+                    idx += len;
+                    values.push(Value::String(
+                        String::from_utf8(raw_s.to_vec()).unwrap().into(),
+                    ));
                 }
                 4 => {
                     idx += 1;
-
                     let arity = raw[idx];
-
                     idx += 1;
 
                     let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
-                    let len = i64::from_le_bytes(len_bytes);
-
+                    let len = u64::from_le_bytes(len_bytes) as usize;
                     idx += 8;
 
-                    let body = &raw[idx..idx + len as usize];
-
-                    idx += len as usize;
+                    let body = &raw[idx..idx + len];
+                    idx += len;
 
                     values.push(Value::Fun {
                         arity,
@@ -291,29 +250,24 @@ impl Value {
                 }
                 5 => {
                     idx += 1;
-
                     let count = raw[idx];
-
                     idx += 1;
 
                     let mut entries = vec![];
 
-                    for _counter in 0..count * 2 {
-                        let (mut temp_vals, temp_idx) = Value::decode(raw.clone(), true, idx);
-
+                    for _ in 0..count * 2 {
+                        let (mut temp_vals, temp_idx) = Value::decode(raw, true, idx);
                         idx = temp_idx;
-
                         entries.append(&mut temp_vals);
                     }
 
-                    let mut obj: HashMap<u64, Value> = HashMap::new();
+                    let mut obj: FxHashMap<u64, Value> = FxHashMap::default();
 
-                    for chunk in entries.chunks_exact(2).into_iter() {
+                    for chunk in entries.chunks_exact(2) {
                         let key_raw = match chunk[0] {
                             Value::Hash(h) => h,
                             _ => unreachable!(),
                         };
-
                         obj.insert(key_raw, chunk[1].clone());
                     }
 
@@ -321,21 +275,36 @@ impl Value {
                 }
                 6 => {
                     idx += 1;
-
                     let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
-
                     idx += 8;
-
                     values.push(Value::Hash(u64::from_le_bytes(bytes)));
                 }
-                _ => panic!("Unexpected value type"),
+                7 => {
+                    idx += 1;
+                    let len_bytes: [u8; 4] = raw[idx..idx + 4].try_into().unwrap();
+                    idx += 4;
+                    let len = u32::from_le_bytes(len_bytes) as usize;
+
+                    let name_bytes = &raw[idx..idx + len];
+                    idx += len;
+
+                    let std = crate::value::StdDefinition::get_core();
+                    let native = std
+                        .functions
+                        .into_iter()
+                        .find(|f| f.name.as_bytes() == name_bytes)
+                        .unwrap_or_else(|| panic!("Missing native function"));
+
+                    values.push(Value::NativeFun(native));
+                }
+                _ => panic!("Unexpected value type at index {}", idx),
             }
 
             if once {
                 break;
             }
         }
-        return (values, idx);
+        (values, idx)
     }
 }
 
@@ -359,13 +328,13 @@ impl From<bool> for Value {
 
 impl From<String> for Value {
     fn from(v: String) -> Self {
-        Value::String(v)
+        Value::String(v.into())
     }
 }
 
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
-        Value::String(v.to_string())
+        Value::String(v.to_string().into())
     }
 }
 
@@ -403,14 +372,20 @@ impl_binary_op!(Sub, sub, -);
 impl_binary_op!(Mul, mul, *);
 impl_binary_op!(Div, div, /);
 
+impl_bitwise_op!(BitAnd, bitand, &);
+impl_bitwise_op!(BitOr, bitor, |);
+impl_bitwise_op!(BitXor, bitxor, ^);
+impl_bitwise_op!(Shl, shl, <<);
+impl_bitwise_op!(Shr, shr, >>);
+
 impl_compare_op!(op_gt, >);
 impl_compare_op!(op_lt, <);
 
 // Native
 
-pub type NativeFn = fn(args: Vec<Value>) -> Result<Value, String>;
+pub type NativeFn = Rc<dyn Fn(Vec<Value>) -> Result<Value, String>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NativeFunction {
     pub name: &'static str,
     pub arity: u8,
@@ -423,15 +398,16 @@ impl PartialEq for NativeFunction {
     }
 }
 
-#[derive(PartialEq, Clone, Debug)]
-pub struct NativeFunctionDef {
-    pub name: &'static str,
-    pub arity: u8,
+use core::fmt::Debug;
+impl Debug for NativeFunction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "NativeFunction - {}", self.name)
+    }
 }
 
 #[derive(Clone)]
 pub struct StdDefinition {
-    pub functions: Vec<NativeFunctionDef>,
+    pub functions: Vec<NativeFunction>,
 }
 
 impl StdDefinition {
@@ -439,18 +415,7 @@ impl StdDefinition {
         use crate::std::StdModule;
 
         return StdDefinition {
-            functions: {
-                StdModule::get_core()
-                    .functions
-                    .iter()
-                    .map(|f| {
-                        return NativeFunctionDef {
-                            name: f.name,
-                            arity: f.arity,
-                        };
-                    })
-                    .collect()
-            },
+            functions: StdModule::get_core().functions,
         };
     }
 }

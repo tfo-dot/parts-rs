@@ -1,15 +1,13 @@
-part hello {
-  (@name) => { println("Hello, ", @name); }
+let std = import `@std/std.pts`;
+
+part example {
+  (select @col in @db) => { std.println("Selecting ", @col, " of ", @db); }
+  (@db) => { std.println("Just a general identifier match lol ", @db); }
+  (@) => { std.println("Fallback for when anything else matches ", @); } 
 }
 
-hello!{ "tfo" };
+example!{ select "data" in "life" };
 
-part sql {
-  (select @col in @db) => { println("Selecting ", @col, " ", @db); }
-  (@db) => { println("renwikbjuwebiuk"); }
-}
+example!{ "data" };
 
-sql!{ select "data" in "XD" };
-
-sql!{ "data" };
-
+example!{ "data", "time" }

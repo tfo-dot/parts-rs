@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use parts::compiler::OpCode;
+    use parts::emitter::OpCode;
     use parts::value::Value;
     use parts::vm::VM;
 

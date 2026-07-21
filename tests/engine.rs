@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn test_custom_native() {
         let mut engine = Engine::new();
-        engine.register_function("rust_add", 2, |args| match (&args[0], &args[1]) {
+        engine.register_native("rust_add", 2, |args| match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
             _ => Err("Expected two integers".to_string()),
         });

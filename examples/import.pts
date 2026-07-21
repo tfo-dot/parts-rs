@@ -1,7 +1,0 @@
-import { PI } from `./lib.pts`;
-
-println(PI);
-
-let f = import `./fn_call.pts`;
-
-println((f.x)(2))

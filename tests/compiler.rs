@@ -2,744 +2,449 @@
 mod tests {
 
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use parts::compiler::Compiler;
-    use parts::compiler::OpCode;
-    use parts::disassemble;
+    use parts::compiler::IrOp;
+    use parts::emitter::Emitter;
     use parts::parser::Ast;
     use parts::parser::BinaryOperator;
     use parts::parser::Value as ParserValue;
     use parts::value::Value;
+    use rustc_hash::FxHashMap;
+
+    fn assert_compile(src: Vec<Ast>, expected: Vec<IrOp>) {
+        let mut c = Compiler::new("./".into());
+        let res = c.compile_all(src).expect("Error during AST compilation");
+
+        assert_eq!(res, expected, "Bytecode mismatch");
+    }
+
+    fn assert_compile_constants(
+        src: Vec<Ast>,
+        expected: Vec<IrOp>,
+        expected_pool_entries: Vec<(usize, Value)>,
+    ) {
+        let mut c = Compiler::new("./".into());
+        let res = c.compile_all(src).expect("Error during AST compilation");
+
+        assert_eq!(res, expected, "Bytecode mismatch");
+
+        println!("Printing pool");
+        for x in &c.constant_pool {
+            println!("{:?}", x);
+        }
+
+        for (index, expected_value) in expected_pool_entries {
+            let actual_value = c
+                .constant_pool
+                .get(index)
+                .unwrap_or_else(|| panic!("Constant {} missing", index));
+
+            assert_eq!(
+                actual_value, &expected_value,
+                "Index at {} doesn't match!",
+                index
+            );
+        }
+    }
 
     #[test]
     fn check_empty() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![]);
-
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap().iter().len(), 0)
+        assert_compile(vec![], vec![]);
     }
 
     #[test]
     fn check_declaration() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Declare {
-            name: "x".to_string(),
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstBool as u8, 0]
-        )
+        assert_compile(
+            vec![Ast::Declare {
+                name: "x".to_string(),
+                value: Box::new(Ast::Value(ParserValue::Bool(false))),
+            }],
+            vec![IrOp::LoadBool {
+                dest: 0,
+                val: false,
+            }],
+        );
     }
 
     #[test]
     fn check_inline_value() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Int(0))]);
-
-        assert!(res.is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstInt as u8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
-            ]));
+        assert_compile(
+            vec![Ast::Value(ParserValue::Int(0))],
+            vec![IrOp::LoadInt { dest: 0, val: 0 }],
+        );
     }
 
     #[test]
     fn check_string_value() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::String("parts".to_string()))]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstString as u8, 0]
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::String("parts".to_string()))],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(0, Value::String(Rc::new("parts".to_string())))],
         );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
     }
 
     #[test]
     fn check_duplicate_string_value() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Value(ParserValue::String("parts".to_string())),
-            Ast::Value(ParserValue::String("parts".to_string())),
-        ]);
-
-        assert!(res.is_ok());
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile_constants(
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstString as u8,
-                0
-            ]
+                Ast::Value(ParserValue::String("parts".to_string())),
+                Ast::Value(ParserValue::String("parts".to_string())),
+            ],
+            vec![
+                IrOp::LoadConst { dest: 0, idx: 0 },
+                IrOp::LoadConst { dest: 0, idx: 0 },
+            ],
+            vec![(0, Value::String(Rc::new("parts".to_string())))],
         );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
     }
 
     #[test]
     fn check_multi_string_value() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Value(ParserValue::String("parts".to_string())),
-            Ast::Value(ParserValue::String("rust".to_string())),
-            Ast::Value(ParserValue::String("parts".to_string())),
-        ]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile_constants(
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstString as u8,
-                1,
-                OpCode::Load as u8,
-                2,
-                OpCode::ConstString as u8,
-                0
-            ]
+                Ast::Value(ParserValue::String("parts".to_string())),
+                Ast::Value(ParserValue::String("rust".to_string())),
+                Ast::Value(ParserValue::String("parts".to_string())),
+            ],
+            vec![
+                IrOp::LoadConst { dest: 0, idx: 0 },
+                IrOp::LoadConst { dest: 0, idx: 1 },
+                IrOp::LoadConst { dest: 0, idx: 0 },
+            ],
+            vec![
+                (0, Value::String(Rc::new("parts".to_string()))),
+                (1, Value::String(Rc::new("rust".to_string()))),
+            ],
         );
-        assert_eq!(c.constant_pool[0], Value::String("parts".to_string()));
-        assert_eq!(c.constant_pool[1], Value::String("rust".to_string()));
     }
 
     #[test]
     fn check_ref() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            },
-            Ast::Declare {
-                name: "y".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Ref("x".to_string()))),
-            },
-        ]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstReg as u8,
-                0,
-            ]
-        )
+                Ast::Declare {
+                    name: "x".to_string(),
+                    value: Box::new(Ast::Value(ParserValue::Bool(false))),
+                },
+                Ast::Declare {
+                    name: "y".to_string(),
+                    value: Box::new(Ast::Value(ParserValue::Ref("x".to_string()))),
+                },
+            ],
+            vec![
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::LoadReg { dest: 1, src: 0 },
+            ],
+        );
     }
 
     #[test]
     fn check_fun_no_args() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec![],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::Fun {
+                args: vec![],
+                body: Box::new(Ast::Return {
+                    value: Box::new(Ast::Value(ParserValue::Bool(false))),
+                }),
+            })],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(
+                0,
+                Value::Fun {
+                    arity: 0,
+                    body: Emitter {}.emit(vec![
+                        IrOp::LoadBool {
+                            dest: 0,
+                            val: false,
+                        },
+                        IrOp::Return { value: 0 },
+                    ]),
+                },
+            )],
         );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 0,
-                body: vec![
-                    OpCode::Load as u8,
-                    0,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    0
-                ]
-            }
-        )
     }
 
     #[test]
     fn check_fun_one_arg() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec!["n".to_string()],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::Fun {
+                args: vec!["n".to_string()],
+                body: Box::new(Ast::Return {
+                    value: Box::new(Ast::Value(ParserValue::Bool(false))),
+                }),
+            })],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(
+                0,
+                Value::Fun {
+                    arity: 1,
+                    body: Emitter {}.emit(vec![
+                        IrOp::LoadBool {
+                            dest: 1,
+                            val: false,
+                        },
+                        IrOp::Return { value: 1 },
+                    ]),
+                },
+            )],
         );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 1,
-                body: vec![
-                    OpCode::Load as u8,
-                    1,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    1
-                ]
-            }
-        )
     }
 
     #[test]
     fn check_fun_multiple_args() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Fun {
-            args: vec!["n".to_string(), "i".to_string()],
-            body: Box::new(Ast::Return {
-                value: Box::new(Ast::Value(ParserValue::Bool(false))),
-            }),
-        })]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![OpCode::Load as u8, 0, OpCode::ConstFun as u8, 0]
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::Fun {
+                args: vec!["n".to_string(), "i".to_string()],
+                body: Box::new(Ast::Return {
+                    value: Box::new(Ast::Value(ParserValue::Bool(false))),
+                }),
+            })],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(
+                0,
+                Value::Fun {
+                    arity: 2,
+                    body: Emitter {}.emit(vec![
+                        IrOp::LoadBool {
+                            dest: 2,
+                            val: false,
+                        },
+                        IrOp::Return { value: 2 },
+                    ]),
+                },
+            )],
         );
-
-        assert_eq!(
-            *c.constant_pool.last().unwrap(),
-            Value::Fun {
-                arity: 2,
-                body: vec![
-                    OpCode::Load as u8,
-                    2,
-                    OpCode::ConstBool as u8,
-                    0,
-                    OpCode::Return as u8,
-                    2
-                ]
-            }
-        )
     }
 
     #[test]
     fn check_return() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Return {
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
+            vec![Ast::Return {
+                value: Box::new(Ast::Value(ParserValue::Bool(false))),
+            }],
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Return as u8,
-                0
-            ]
-        );
-    }
-
-    #[test]
-    fn check_raise() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Return {
-            value: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
-            vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Return as u8,
-                0
-            ]
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::Return { value: 0 },
+            ],
         );
     }
 
     #[test]
     fn check_call() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Call {
-            what: Box::new(Ast::Value(ParserValue::String("fib".to_string()))),
-            args: vec![Ast::Value(ParserValue::Int(0))],
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
+            vec![Ast::Call {
+                what: Box::new(Ast::Value(ParserValue::String("fib".to_string()))),
+                args: vec![Ast::Value(ParserValue::Int(0))],
+            }],
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstString as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstInt as u8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                OpCode::Call as u8,
-                2,
-                0,
-                1,
-                1,
-            ]
+                IrOp::LoadConst { dest: 0, idx: 0 },
+                IrOp::LoadInt { dest: 1, val: 0 },
+                IrOp::Call {
+                    what: 0,
+                    dest: 2,
+                    args: vec![1],
+                },
+            ],
         );
     }
 
     #[test]
     fn check_binary() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Binary {
-            left: Box::new(Ast::Value(ParserValue::Bool(false))),
-            right: Box::new(Ast::Value(ParserValue::Bool(false))),
-            operator: BinaryOperator::Add,
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
+            vec![Ast::Binary {
+                left: Box::new(Ast::Value(ParserValue::Bool(false))),
+                right: Box::new(Ast::Value(ParserValue::Bool(false))),
+                operator: BinaryOperator::Add,
+            }],
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::Binary as u8,
-                0,
-                2,
-                0,
-                1
-            ]
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::LoadBool {
+                    dest: 1,
+                    val: false,
+                },
+                IrOp::Binary {
+                    dest: 2,
+                    op: BinaryOperator::Add,
+                    left: 0,
+                    right: 1,
+                },
+            ],
         );
     }
 
     #[test]
     fn check_if() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::If {
-            then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
-            else_branch: Some(Box::new(Ast::Value(ParserValue::Bool(false)))),
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
+            vec![Ast::If {
+                then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
+                else_branch: Some(Box::new(Ast::Value(ParserValue::Bool(false)))),
+                condition: Box::new(Ast::Value(ParserValue::Bool(false))),
+            }],
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                7,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                1,
-                OpCode::JumpBy as u8,
-                4,
-                0,
-                OpCode::Load as u8,
-                2,
-                OpCode::ConstBool as u8,
-                0,
-            ]
-        )
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::JumpNot {
+                    target: 0,
+                    condition: 0,
+                },
+                IrOp::LoadBool { dest: 1, val: true },
+                IrOp::Jump { target: 1 },
+                IrOp::Label(0),
+                IrOp::LoadBool {
+                    dest: 2,
+                    val: false,
+                },
+                IrOp::Label(1),
+            ],
+        );
     }
 
     #[test]
     fn check_if_no_else() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::If {
-            then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
-            else_branch: None,
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(res.is_ok());
-
-        let res_vec = res.unwrap();
-
-        assert_eq!(
-            res_vec,
+        assert_compile(
+            vec![Ast::If {
+                then_branch: Box::new(Ast::Value(ParserValue::Bool(true))),
+                else_branch: None,
+                condition: Box::new(Ast::Value(ParserValue::Bool(false))),
+            }],
             vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                4,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                1
-            ]
-        )
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::JumpNot {
+                    target: 0,
+                    condition: 0,
+                },
+                IrOp::LoadBool { dest: 1, val: true },
+                IrOp::Label(0),
+            ],
+        );
     }
 
     #[test]
     fn check_continue() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::For {
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-            body: (Box::new(Ast::ContinueCode)),
-        }]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                6,
-                0,
-                OpCode::JumpBack as u8,
-                11,
-                0,
-                OpCode::JumpBack as u8,
-                14,
-                0
-            ]));
+        assert_compile(
+            vec![Ast::For {
+                condition: Box::new(Ast::Value(ParserValue::Bool(false))),
+                body: (Box::new(Ast::ContinueCode)),
+            }],
+            vec![
+                IrOp::Label(0),
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::JumpNot {
+                    target: 1,
+                    condition: 0,
+                },
+                IrOp::Jump { target: 0 },
+                IrOp::Jump { target: 0 },
+                IrOp::Label(1),
+            ],
+        );
     }
+
     #[test]
-
     fn check_break() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::For {
-            condition: Box::new(Ast::Value(ParserValue::Bool(false))),
-            body: (Box::new(Ast::BreakCode)),
-        }]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::JumpNot as u8,
-                0,
-                6,
-                0,
-                OpCode::Jump as u8,
-                14,
-                0,
-                OpCode::JumpBack as u8,
-                14,
-                0
-            ]));
+        assert_compile(
+            vec![Ast::For {
+                condition: Box::new(Ast::Value(ParserValue::Bool(false))),
+                body: (Box::new(Ast::BreakCode)),
+            }],
+            vec![
+                IrOp::Label(0),
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+                IrOp::JumpNot {
+                    target: 1,
+                    condition: 0,
+                },
+                IrOp::Jump { target: 1 },
+                IrOp::Jump { target: 0 },
+                IrOp::Label(1),
+            ],
+        );
     }
 
     #[test]
     fn check_obj_no_entries() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Object(vec![]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::Object(vec![]))],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(
+                0,
+                Value::Object(Rc::new(RefCell::new(FxHashMap::default()))),
+            )],
         );
-
-        assert!(
-            c.constant_pool
-                .get(0)
-                .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.borrow().len() == 0
-                } else {
-                    false
-                })
-        )
     }
 
     #[test]
     fn check_obj_with_entries() {
-        let mut c = Compiler::new("./".into());
+        let mut m = FxHashMap::default();
 
-        let res = c.compile_all(vec![Ast::Value(ParserValue::Object(vec![(
-            ParserValue::Int(100),
-            ParserValue::Bool(false),
-        )]))]);
+        m.insert(Value::Int(100).get_hash(), Value::Bool(false));
 
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
+        assert_compile_constants(
+            vec![Ast::Value(ParserValue::Object(vec![(
+                ParserValue::Int(100),
+                ParserValue::Bool(false),
+            )]))],
+            vec![IrOp::LoadConst { dest: 0, idx: 0 }],
+            vec![(0, Value::Object(Rc::new(RefCell::new(m))))],
         );
-
-        let obj = c.constant_pool.get(0).expect("Expected actual value");
-
-        let mut expected = HashMap::new();
-
-        expected.insert(Value::Int(100).get_hash(), Value::Bool(false));
-
-        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
-    }
-
-    #[test]
-    fn check_arr_no_entries() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::List(vec![]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        assert!(
-            c.constant_pool
-                .get(0)
-                .is_some_and(|x| if let Value::Object(entries) = x {
-                    entries.borrow().len() == 0
-                } else {
-                    false
-                })
-        )
-    }
-
-    #[test]
-    fn check_arr_with_entries() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Value(ParserValue::List(vec![
-            ParserValue::Int(100),
-            ParserValue::Bool(false),
-        ]))]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstObj as u8, 0])
-        );
-
-        let obj = c.constant_pool.get(0).expect("Expected valid value");
-
-        let mut expected = HashMap::new();
-
-        expected.insert(Value::Int(0).get_hash(), Value::Int(100));
-        expected.insert(Value::Int(1).get_hash(), Value::Bool(false));
-
-        assert_eq!(*obj, Value::Object(Rc::new(RefCell::new(expected))));
     }
 
     #[test]
     fn check_assign_no_declaration() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![Ast::Set {
-            name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
-            value: Box::from(Ast::Value(ParserValue::Bool(false))),
-        }]);
-
-        assert!(
-            res.clone()
-                .is_ok_and(|out| out == vec![OpCode::Load as u8, 0, OpCode::ConstBool as u8, 0])
+        assert_compile(
+            vec![Ast::Set {
+                name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
+                value: Box::from(Ast::Value(ParserValue::Bool(false))),
+            }],
+            vec![IrOp::LoadBool {
+                dest: 0,
+                val: false,
+            }],
         );
     }
 
     #[test]
     fn check_assign_with_declaration() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Bool(true))),
-            },
-            Ast::Set {
-                name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
-                value: Box::from(Ast::Value(ParserValue::Bool(false))),
-            },
-        ]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                1,
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstBool as u8,
-                0
-            ]));
-    }
-
-    #[test]
-    fn check_assign_with_dot() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "x".to_string(),
-                value: Box::new(Ast::Value(ParserValue::Object(vec![]))),
-            },
-            Ast::Set {
-                name: Box::from(Ast::Dot {
-                    accessor: Box::new(Ast::Value(ParserValue::Ref("x".to_string()))),
-                    access: Box::new(Ast::Value(ParserValue::Ref("y".to_string()))),
-                }),
-                value: Box::from(Ast::Value(ParserValue::Bool(false))),
-            },
-        ]);
-
-        let hash = Value::Ref("y".to_string()).get_hash();
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstObj as u8,
-                0,
-                OpCode::Load as u8,
-                1,
-                OpCode::ConstBool as u8,
-                0,
-                OpCode::SetProperty as u8,
-                0, //Register
-                1, //Const
-                1  //Value register
-            ]));
-
-        assert_eq!(c.constant_pool[1], Value::Hash(hash.try_into().unwrap()))
-    }
-
-    #[test]
-    fn check_arr_access() {
-        let mut c = Compiler::new("./".into());
-
-        let res = c.compile_all(vec![
-            Ast::Declare {
-                name: "arr".to_string(),
-                value: Box::new(Ast::Value(ParserValue::List(vec![
-                    ParserValue::Int(100),
-                    ParserValue::Bool(false),
-                ]))),
-            },
-            Ast::Dot {
-                accessor: Box::new(Ast::Value(ParserValue::Ref("arr".to_string()))),
-                access: Box::new(Ast::Value(ParserValue::Int(100))),
-            },
-        ]);
-
-        assert!(res.clone().is_ok_and(|out| out
-            == vec![
-                OpCode::Load as u8,
-                0,
-                OpCode::ConstObj as u8,
-                0,
-                OpCode::GetProperty as u8,
-                1, //Register
-                0, //Const
-                1  //Value register
-            ]));
+        assert_compile(
+            vec![
+                Ast::Declare {
+                    name: "x".to_string(),
+                    value: Box::new(Ast::Value(ParserValue::Bool(true))),
+                },
+                Ast::Set {
+                    name: Box::from(Ast::Value(ParserValue::Ref("x".to_string()))),
+                    value: Box::from(Ast::Value(ParserValue::Bool(false))),
+                },
+            ],
+            vec![
+                IrOp::LoadBool { dest: 0, val: true },
+                IrOp::LoadBool {
+                    dest: 0,
+                    val: false,
+                },
+            ],
+        );
     }
 }

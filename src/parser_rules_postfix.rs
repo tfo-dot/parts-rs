@@ -2,6 +2,7 @@ use crate::parser::BinaryOperator;
 use crate::parser::Error as ParserError;
 use crate::parser::Value;
 use crate::parser::{Ast, Parser};
+use crate::scanner::Span;
 use crate::scanner::{Token, TokenType};
 use std::fmt;
 use std::sync::Arc;
@@ -32,41 +33,35 @@ impl PostfixRule {
             PostfixRule {
                 id: "DotExpr".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, vec!['D', 'O', 'T']))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("DOT")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Dot {
                         accessor: Box::new(ast),
                         access: Box::new(parser.parse_rule("VarExpr")?),
+                        resolve: false,
                     })
                 }),
             },
             PostfixRule {
                 id: "ArrIndex".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LEFT_BRACKET".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LEFT_BRACKET")),
                 parse: Arc::new(|parser, ast| {
                     let access = parser.parse()?;
 
-                    if !parser.match_operator("RIGHT_BRACKET") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("RIGHT_BRACKET")?;
 
                     Ok(Ast::Dot {
                         accessor: Box::new(ast),
                         access: Box::new(access),
+                        resolve: true,
                     })
                 }),
             },
             PostfixRule {
                 id: "PlusOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "PLUS".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("PLUS")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -78,9 +73,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "MinusOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "MINUS".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("MINUS")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -92,9 +85,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "MulOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "STAR".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("STAR")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -106,9 +97,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "DivOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "SLASH".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("SLASH")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -120,9 +109,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "EqOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "EQUALITY".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("EQUALITY")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -134,9 +121,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "GtOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "MORE_THAN".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("MORE_THAN")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -148,32 +133,19 @@ impl PostfixRule {
             PostfixRule {
                 id: "GtEqOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "MORE_EQ".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("MORE_EQ")),
                 parse: Arc::new(|parser, ast| {
-                    let right = parser.parse()?;
                     Ok(Ast::Binary {
-                        left: Box::new(Ast::Binary {
-                            left: Box::new(ast.clone()),
-                            right: Box::new(right.clone()),
-                            operator: BinaryOperator::GreaterThan,
-                        }),
-                        right: Box::new(Ast::Binary {
-                            left: Box::new(ast),
-                            right: Box::new(right),
-                            operator: BinaryOperator::Equals,
-                        }),
-                        operator: BinaryOperator::Add,
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::GreaterThanOrEqual,
                     })
                 }),
             },
             PostfixRule {
                 id: "LtOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LESS_THAN".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LESS_THAN")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -185,32 +157,19 @@ impl PostfixRule {
             PostfixRule {
                 id: "LtEqOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LESS_EQ".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LESS_EQ")),
                 parse: Arc::new(|parser, ast| {
-                    let right = parser.parse()?;
                     Ok(Ast::Binary {
-                        left: Box::new(Ast::Binary {
-                            left: Box::new(ast.clone()),
-                            right: Box::new(right.clone()),
-                            operator: BinaryOperator::LessThan,
-                        }),
-                        right: Box::new(Ast::Binary {
-                            left: Box::new(ast),
-                            right: Box::new(right),
-                            operator: BinaryOperator::Equals,
-                        }),
-                        operator: BinaryOperator::Add,
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::LessThanOrEqual,
                     })
                 }),
             },
             PostfixRule {
                 id: "ModOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "MOD".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("MOD")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Binary {
                         left: Box::new(ast),
@@ -220,15 +179,73 @@ impl PostfixRule {
                 }),
             },
             PostfixRule {
+                id: "BitAndOp".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("BIT_AND")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::BitAnd,
+                    })
+                }),
+            },
+            PostfixRule {
+                id: "BitOrOp".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("BIT_OR")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::BitOr,
+                    })
+                }),
+            },
+            PostfixRule {
+                id: "BitXorOp".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("BIT_XOR")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::BitXor,
+                    })
+                }),
+            },
+            PostfixRule {
+                id: "BitShlOp".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("LEFT_SHIFT")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::BitSHL,
+                    })
+                }),
+            },
+            PostfixRule {
+                id: "BitShrOp".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("RIGHT_SHIFT")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::BitSHR,
+                    })
+                }),
+            },
+            PostfixRule {
                 id: "FunCall".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "LEFT_PAREN".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("LEFT_PAREN")),
                 parse: Arc::new(|parser, ast| {
                     let mut args: Vec<Ast> = vec![];
 
-                    if !parser.check(Token(TokenType::Operator, "RIGHT_PAREN".chars().collect())) {
+                    if !parser.check_operator("RIGHT_PAREN") {
                         loop {
                             args.push(parser.parse()?);
 
@@ -238,9 +255,7 @@ impl PostfixRule {
                         }
                     }
 
-                    if !parser.match_operator("RIGHT_PAREN") {
-                        return Err(ParserError::TokenMismatch);
-                    }
+                    parser.expect_operator("RIGHT_PAREN")?;
 
                     Ok(Ast::Call {
                         what: Box::new(ast),
@@ -251,9 +266,7 @@ impl PostfixRule {
             PostfixRule {
                 id: "SetOp".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "EQUALS".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("EQUALS")),
                 parse: Arc::new(|parser, ast| {
                     Ok(Ast::Set {
                         name: Box::new(ast),
@@ -264,36 +277,44 @@ impl PostfixRule {
             PostfixRule {
                 id: "MacroCall".to_string(),
                 advance_token: true,
-                rule: Arc::new(|parser| {
-                    parser.check(Token(TokenType::Operator, "BANG".chars().collect()))
-                }),
+                rule: Arc::new(|parser| parser.check_operator("BANG")),
                 parse: Arc::new(|parser, ast| {
                     let macro_name = if let Ast::Value(Value::Ref(name)) = ast {
                         name
                     } else {
-                        return Err(ParserError::TokenMismatch);
+                        return Err(ParserError::TokenMismatch(
+                            Token {
+                                kind: TokenType::Identifier,
+                                lexeme: "".to_string(),
+                                span: Span { line: 0, column: 0 },
+                            },
+                            parser.peek()?,
+                        ));
                     };
 
                     if !parser.match_operator("LEFT_BRACE") {
-                        return Err(ParserError::TokenMismatch);
+                        return Err(ParserError::TokenMismatch(
+                            Token {
+                                kind: TokenType::Operator,
+                                lexeme: "LEFT_BRACE".to_string(),
+                                span: Span { line: 0, column: 0 },
+                            },
+                            parser.peek()?,
+                        ));
                     }
 
                     let mut macro_call = vec![];
 
                     loop {
-                        if parser.match_operator("RIGHT_BRACE") {
+                        if parser.check_operator("RIGHT_BRACE") {
                             break;
                         }
 
                         if parser.match_operator("AT") {
-                            if parser.peek()?.0 == TokenType::Identifier {
+                            if parser.peek()?.kind == TokenType::Identifier {
                                 let mut temp = parser.advance()?;
 
-                                let mut tmp_vec = vec!['@'];
-
-                                tmp_vec.append(&mut temp.1);
-
-                                temp.1 = tmp_vec;
+                                temp.lexeme = format!("@{}", temp.lexeme);
 
                                 macro_call.push(temp);
                                 continue;
@@ -304,6 +325,8 @@ impl PostfixRule {
                     }
 
                     parser.handle_macro(&macro_name, macro_call)?;
+
+                    let _ = parser.advance();
 
                     Ok(Ast::Ignore)
                 }),

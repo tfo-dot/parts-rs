@@ -9,5 +9,13 @@ pub mod disassemble;
 pub mod std;
 pub mod engine;
 pub mod value;
+pub mod optimize;
+pub mod emitter;
 
 mod utils;
+
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "lib/"]
+pub struct Assets;
