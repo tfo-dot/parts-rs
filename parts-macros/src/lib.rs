@@ -82,12 +82,16 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #wrapper_body
         }
 
-        #[allow(non_upper_case_globals)]
-        pub const #name: crate::value::NativeFunction = crate::value::NativeFunction {
-            name: stringify!(#name),
-            arity: #arity,
-            call: #internal_name,
-        };
+        // ZMIANA: Zamiast 'pub const', generujemy funkcję zwracającą strukturę.
+        #[allow(non_snake_case)]
+        #vis fn #name() -> crate::value::NativeFunction {
+            crate::value::NativeFunction {
+                name: stringify!(#name),
+                arity: #arity,
+                // Pakujemy wygenerowaną funkcję internal w Rc
+                call: std::rc::Rc::new(#internal_name), 
+            }
+        }
     };
 
     generated.into()

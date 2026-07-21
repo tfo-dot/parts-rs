@@ -1,4 +1,5 @@
 use crate::compiler::Compiler;
+use crate::emitter::Emitter;
 use crate::parser::Parser;
 use crate::value::{NativeFunction, Value};
 use crate::vm::VM;
@@ -35,7 +36,11 @@ impl Engine {
         arity: u8,
         call: fn(args: Vec<Value>) -> Result<Value, String>,
     ) {
-        self.natives.push(NativeFunction { name, arity, call });
+        self.natives.push(NativeFunction {
+            name,
+            arity,
+            call: std::rc::Rc::new(call),
+        });
     }
 
     pub fn execute(&self, source: &str) -> Result<Option<Value>, String> {
@@ -49,7 +54,7 @@ impl Engine {
             .map_err(|e| format!("Parser error: {:?}", e))?;
 
         let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
-        let bytecode = compiler.compile_all(ast).map_err(|e| {
+        let ast = compiler.compile_all(ast).map_err(|e| {
             format!(
                 "Compiler error: {}",
                 e.iter()
@@ -58,6 +63,8 @@ impl Engine {
                     .join("\n")
             )
         })?;
+
+        let bytecode = Emitter {}.emit(ast);
 
         let mut vm = VM::with_natives(bytecode, compiler.constant_pool, self.natives.clone());
         let value = vm.run().map_err(|e| format!("VM error: {:?}", e))?;

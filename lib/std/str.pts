@@ -2,5 +2,10 @@
 
 return |>
     len: __str_len,
-    join: __joinStr
+    join: __joinStr,
+    strip_prefix: __str_strip_prefix,
+    strip_suffix: __str_strip_suffix,
+    lower: __str_lower,
+    upper: __str_upper,
+    byte_at: __str_byte_at
 <|;

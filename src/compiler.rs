@@ -1,15 +1,16 @@
+use crate::emitter::Emitter;
+use crate::parser::BinaryOperator;
 use crate::parser::ImportType;
 use crate::parser::Parser;
 use crate::parser::Value as ParserValue;
 use crate::value::{NativeFunction, StdDefinition, Value};
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::define_opcodes;
 use crate::parser::Ast;
 
 #[derive(Clone, Debug)]
@@ -26,62 +27,34 @@ pub enum ErrorLevel {
     Warning,
 }
 
-define_opcodes! {
-    // Constants
-    ConstInt    = 0x00,
-    ConstDouble = 0x01,
-    ConstBool   = 0x02,
-    ConstString = 0x03,
-    ConstRef    = 0x04,
-    ConstFun    = 0x05,
-    ConstObj    = 0x06,
-    ConstReg    = 0x07,
-    ConstAst    = 0x08,
-    ConstParserValue = 0x09,
-
-    // Flow Control
-    Return      = 0x10,
-    Call        = 0x11,
-    Binary      = 0x12,
-    Jump        = 0x13,
-    JumpBy      = 0x14,
-    JumpIf      = 0x15,
-    JumpNot     = 0x16,
-    JumpBack    = 0x17,
-
-    //Register movements
-    Load        = 0x20,
-    GetProperty = 0x21,
-    SetProperty = 0x22,
-    LoadNative  = 0x23
-}
-
 struct LoopContext {
-    target: usize,
-    jump_list: Vec<usize>,
+    start: usize,
+    end: usize,
 }
 
 struct Context {
-    bytecode: Vec<u8>,
+    ir_buff: Vec<IrOp>,
 
-    scopes: Vec<HashMap<String, u8>>,
-    top_level_names: HashMap<String, u8>,
+    scopes: Vec<FxHashMap<String, u8>>,
+    top_level_names: FxHashMap<String, u8>,
     next_free_register: u8,
 
     loop_stack: Vec<LoopContext>,
-
-    loaded_natives: HashMap<String, u8>,
+    scope_bases: Vec<u8>,
+    local_count: u8,
 }
 
 impl Context {
     fn new() -> Self {
         return Self {
-            bytecode: vec![],
-            scopes: vec![HashMap::new()],
-            top_level_names: HashMap::new(),
+            scopes: vec![FxHashMap::default()],
+            scope_bases: vec![0],
+            top_level_names: FxHashMap::default(),
             next_free_register: 0,
             loop_stack: vec![],
-            loaded_natives: HashMap::new(),
+            local_count: 0,
+
+            ir_buff: vec![],
         };
     }
 
@@ -96,19 +69,20 @@ impl Context {
     }
 
     fn begin_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(FxHashMap::default());
+        self.scope_bases.push(self.local_count);
     }
 
     fn end_scope(&mut self) {
-        if let Some(last_scope) = self.scopes.pop() {
-            if let Some(&min_reg) = last_scope.values().min() {
-                self.next_free_register = min_reg;
-            }
+        self.scopes.pop();
+        if let Some(base) = self.scope_bases.pop() {
+            self.local_count = base;
+            self.next_free_register = self.local_count;
         }
     }
 
     fn add_local(&mut self, name: String) -> u8 {
-        let reg = self.next_free_register;
+        let reg = self.local_count;
 
         if self.scopes.len() == 1 {
             self.top_level_names.insert(name.clone(), reg);
@@ -116,8 +90,10 @@ impl Context {
 
         if let Some(current) = self.scopes.last_mut() {
             current.insert(name, reg);
-            self.next_free_register += 1;
         }
+
+        self.local_count += 1;
+        self.next_free_register = self.local_count;
 
         reg
     }
@@ -130,8 +106,97 @@ pub struct Compiler {
     pub constant_pool: Vec<Value>,
     contexts: Vec<Context>,
     std: StdDefinition,
-    module_cache: HashMap<String, Value>,
+    module_cache: FxHashMap<String, Value>,
     source: PathBuf,
+    next_label_id: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum IrOp {
+    LoadConst {
+        dest: u8,
+        idx: u8,
+    },
+    LoadReg {
+        dest: u8,
+        src: u8,
+    },
+    LoadNative {
+        dest: u8,
+        src: u8,
+    },
+    LoadGlobal {
+        dest: u8,
+        src: u8,
+    },
+    LoadFun {
+        dest: u8,
+        src: u8,
+    },
+    LoadInt {
+        dest: u8,
+        val: i64,
+    },
+    LoadDouble {
+        dest: u8,
+        val: f64,
+    },
+    LoadBool {
+        dest: u8,
+        val: bool,
+    },
+    LoadObject {
+        dest: u8,
+        src: u8,
+    },
+    GetProperty {
+        dest: u8,
+        obj: u8,
+        key: u8,
+    },
+    GetPropertyDyn {
+        dest: u8,
+        obj: u8,
+        key: u8,
+    },
+    SetProperty {
+        obj: u8,
+        key: u8,
+        val: u8,
+    },
+    SetPropertyDyn {
+        obj: u8,
+        key: u8,
+        val: u8,
+    },
+    Return {
+        value: u8,
+    },
+    Call {
+        dest: u8,
+        what: u8,
+        args: Vec<u8>,
+    },
+    Binary {
+        dest: u8,
+        op: BinaryOperator,
+        left: u8,
+        right: u8,
+    },
+    JumpNot {
+        target: usize,
+        condition: u8,
+    },
+    Jump {
+        target: usize,
+    },
+    Inc {
+        target: u8,
+    },
+    Dec {
+        target: u8,
+    },
+    Label(usize),
 }
 
 impl Compiler {
@@ -142,7 +207,8 @@ impl Compiler {
             errors: vec![],
             had_error: false,
             std: StdDefinition::get_core(),
-            module_cache: HashMap::new(),
+            module_cache: FxHashMap::default(),
+            next_label_id: 0,
             source,
         }
     }
@@ -165,35 +231,58 @@ impl Compiler {
         return address;
     }
 
-    fn compile_module(&mut self, source: String) -> Value {
-        let (raw_source, path_str, new_source_path) = if source.starts_with("@std/") || self.source.starts_with("@std") {
-            let virtual_path = if source.starts_with("@std/") {
-                PathBuf::from(&source[5..])
-            } else {
-                self.source.join(&source)
-            };
+    fn new_label(&mut self) -> usize {
+        let id = self.next_label_id;
+        self.next_label_id += 1;
+        id
+    }
 
-            // Normalize the virtual path (remove @std prefix if present for lookup)
-            let mut internal_path = virtual_path.clone();
-            if internal_path.starts_with("@std") {
-                internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
-            }
-            
-            let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
-            
-            let file = crate::Assets::get(internal_path_str)
-                .expect(&format!("Standard library module not found: {} (original: {})", internal_path_str, source));
-            let content = String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
-            
-            let path_str = format!("@std/{}", internal_path_str);
-            (content, path_str, PathBuf::from("@std").join(internal_path_str).parent().unwrap().to_path_buf())
-        } else {
-            let full_path = self.source.join(&source);
-            let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
-            let path_str = canonical_path.to_str().unwrap().to_string();
-            let content = fs::read_to_string(&canonical_path).expect(&format!("Some error with reading import: {}", path_str));
-            (content, path_str, canonical_path.parent().unwrap().to_path_buf())
-        };
+    fn compile_module(&mut self, source: String) -> Value {
+        let (raw_source, path_str, new_source_path) =
+            if source.starts_with("@std/") || self.source.starts_with("@std") {
+                let virtual_path = if source.starts_with("@std/") {
+                    PathBuf::from(&source[5..])
+                } else {
+                    self.source.join(&source)
+                };
+
+                // Normalize the virtual path (remove @std prefix if present for lookup)
+                let mut internal_path = virtual_path.clone();
+                if internal_path.starts_with("@std") {
+                    internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
+                }
+
+                let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
+
+                let file = crate::Assets::get(internal_path_str).expect(&format!(
+                    "Standard library module not found: {} (original: {})",
+                    internal_path_str, source
+                ));
+                let content =
+                    String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
+
+                let path_str = format!("@std/{}", internal_path_str);
+                (
+                    content,
+                    path_str,
+                    PathBuf::from("@std")
+                        .join(internal_path_str)
+                        .parent()
+                        .unwrap()
+                        .to_path_buf(),
+                )
+            } else {
+                let full_path = self.source.join(&source);
+                let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
+                let path_str = canonical_path.to_str().unwrap().to_string();
+                let content = fs::read_to_string(&canonical_path)
+                    .expect(&format!("Some error with reading import: {}", path_str));
+                (
+                    content,
+                    path_str,
+                    canonical_path.parent().unwrap().to_path_buf(),
+                )
+            };
 
         if let Some(cached) = self.module_cache.get(&path_str) {
             return cached.clone();
@@ -209,11 +298,12 @@ impl Compiler {
 
         for item in import_ast {
             self.compile(item);
+
+            self.current().next_free_register = self.current().local_count;
         }
 
-        // Create the exports object
         let obj_reg = self.next_free_address();
-        let obj_val = Value::Object(Rc::new(RefCell::new(HashMap::new())));
+        let obj_val = Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
         let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
             Some(idx) => idx,
             None => {
@@ -222,14 +312,14 @@ impl Compiler {
             }
         };
 
-        self.emit_op(OpCode::Load);
-        self.emit(obj_reg);
-        self.emit_op(OpCode::ConstObj);
-        self.emit(obj_idx as u8);
+        self.add_inst(IrOp::LoadObject {
+            dest: obj_reg,
+            src: obj_idx as u8,
+        });
 
         let top_level = self.current().top_level_names.clone();
         for (name, reg) in top_level {
-            let hash = Value::Hash(Value::String(name).get_hash());
+            let hash = Value::Hash(Value::String(name.into()).get_hash());
             let const_idx = match self.constant_pool.iter().position(|c| *c == hash) {
                 Some(idx) => idx,
                 None => {
@@ -238,19 +328,19 @@ impl Compiler {
                 }
             };
 
-            self.emit_op(OpCode::SetProperty);
-            self.emit(obj_reg);
-            self.emit(const_idx as u8);
-            self.emit(reg);
+            self.add_inst(IrOp::SetProperty {
+                obj: obj_reg,
+                key: const_idx as u8,
+                val: reg,
+            });
         }
 
-        self.emit_op(OpCode::Return);
-        self.emit(obj_reg);
+        self.add_inst(IrOp::Return { value: obj_reg });
 
         let ctx = self.contexts.pop().expect("Empty contexts");
         let fun = Value::Fun {
             arity: 0,
-            body: ctx.bytecode,
+            body: Emitter {}.emit(ctx.ir_buff),
         };
 
         self.source = old_source;
@@ -258,102 +348,24 @@ impl Compiler {
         fun
     }
 
-    pub fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<u8>, Vec<Error>> {
+    pub fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<IrOp>, Vec<Error>> {
         for item in ast {
             if item != Ast::Ignore {
                 self.compile(item);
+
+                self.current().next_free_register = self.current().local_count;
             }
         }
 
         if self.had_error {
-            return Err(self.errors.clone());
+            Err(self.errors.clone())
         } else {
-            Ok(self.current().bytecode.clone())
+            Ok(self.current().ir_buff.clone())
         }
     }
 
-    fn emit_op(&mut self, op: OpCode) {
-        self.current().bytecode.push(op as u8);
-    }
-
-    fn emit(&mut self, val: u8) {
-        self.current().bytecode.push(val);
-    }
-
-    fn emit16(&mut self, val: u16) {
-        let bytes = (val as u16).to_le_bytes();
-
-        self.emit(bytes[0]);
-        self.emit(bytes[1]);
-    }
-
-    fn emit_vec(&mut self, val: Vec<u8>) {
-        let mut temp = val.clone();
-
-        self.current().bytecode.append(&mut temp);
-    }
-
-    fn emit_jump_op(&mut self, op: OpCode) -> usize {
-        self.emit_op(op);
-
-        self.emit_jump()
-    }
-
-    fn emit_jump(&mut self) -> usize {
-        self.emit(0xff);
-        self.emit(0xff);
-
-        self.current().bytecode.len() - 2
-    }
-
-    fn patch_jump(&mut self, pos: usize) {
-        let distance = self.current().bytecode.len() - (pos + 2);
-
-        //todo check and error if it's too large
-
-        let bytes = (distance as u16).to_le_bytes();
-
-        self.current().bytecode[pos] = bytes[0];
-        self.current().bytecode[pos + 1] = bytes[1];
-    }
-
-    fn patch_jump_to_target(&mut self, pos: usize, target: usize) {
-        let bytes = (target as u16).to_le_bytes();
-
-        self.current().bytecode[pos] = bytes[0];
-        self.current().bytecode[pos + 1] = bytes[1];
-    }
-
-    fn compile_const(&mut self, value: ParserValue) {
-        let converted = self.convert_const(value.clone());
-
-        match &converted {
-            Value::Int(_) => self.emit_op(OpCode::ConstInt),
-            Value::Double(_) => self.emit_op(OpCode::ConstDouble),
-            Value::Bool(_) => self.emit_op(OpCode::ConstBool),
-            Value::String(_) => self.emit_op(OpCode::ConstString),
-            Value::Ref(name) => {
-                if let Some(reg) = self.current().resolve_local(name) {
-                    self.emit_op(OpCode::ConstReg);
-                    self.emit(reg);
-                    return;
-                }
-
-                self.emit_op(OpCode::ConstRef);
-            }
-            Value::Fun { .. } => self.emit_op(OpCode::ConstFun),
-            Value::Object(_) => self.emit_op(OpCode::ConstObj),
-            Value::NativeFun(_) => {
-                // For native functions, we treat them as constants if they are used as such
-                self.emit_op(OpCode::ConstFun);
-            }
-            Value::Hash(_) => {
-                 self.emit_op(OpCode::ConstInt); // Should probably have a ConstHash but use Int for now
-            }
-        };
-
-        let temp = self.compile_value(converted);
-        self.emit_vec(temp);
+    fn add_inst(&mut self, i: IrOp) {
+        self.current().ir_buff.push(i);
     }
 
     fn find_stds(&self, ast: Ast) -> Vec<String> {
@@ -441,31 +453,6 @@ impl Compiler {
         }
     }
 
-    fn compile_value(&mut self, value: Value) -> Vec<u8> {
-        return match value {
-            Value::Int(i) => i.to_le_bytes().into(),
-            Value::Double(d) => d.to_le_bytes().into(),
-            Value::Bool(b) => vec![b as u8],
-            Value::Ref(r) => {
-                if let Some(reg) = self.current().resolve_local(&r) {
-                    return vec![reg];
-                }
-                panic!("UndefinedResolve - {}", r);
-            }
-            Value::Fun { arity: _, body: _ }
-            | Value::Object(_)
-            | Value::String(_)
-            | Value::NativeFun(_)
-            | Value::Hash(_) => match self.constant_pool.iter().position(|x| x == &value) {
-                Some(expr) => vec![expr as u8],
-                None => {
-                    self.constant_pool.push(value);
-                    vec![(self.constant_pool.len() - 1) as u8]
-                }
-            },
-        };
-    }
-
     fn compile(&mut self, ast: Ast) -> u8 {
         match ast {
             Ast::Declare { name, value } => {
@@ -473,20 +460,71 @@ impl Compiler {
 
                 match *value {
                     Ast::Value(raw) => {
-                        self.emit_op(OpCode::Load);
-                        self.emit(address);
+                        let v = self.convert_const(raw.clone());
 
-                        self.compile_const(raw);
+                        match v {
+                            Value::Int(i) => self.add_inst(IrOp::LoadInt {
+                                dest: address,
+                                val: i,
+                            }),
+                            Value::Double(d) => self.add_inst(IrOp::LoadDouble {
+                                dest: address,
+                                val: d,
+                            }),
+                            Value::Bool(b) => self.add_inst(IrOp::LoadBool {
+                                dest: address,
+                                val: b,
+                            }),
+                            Value::Ref(r) => {
+                                if let Some(reg) = self.current().resolve_local(&r) {
+                                    self.add_inst(IrOp::LoadReg {
+                                        dest: address,
+                                        src: reg,
+                                    });
+                                    return address;
+                                }
+
+                                let hash = Value::Hash(Value::String(r.clone()).get_hash());
+                                let reg = match self.constant_pool.iter().position(|x| x == &hash) {
+                                    Some(idx) => idx as u8,
+                                    None => {
+                                        self.constant_pool.push(hash);
+                                        (self.constant_pool.len() - 1) as u8
+                                    }
+                                };
+
+                                self.add_inst(IrOp::LoadConst {
+                                    dest: address,
+                                    idx: reg,
+                                });
+                            }
+                            Value::Fun { arity: _, body: _ }
+                            | Value::Object(_)
+                            | Value::String(_)
+                            | Value::NativeFun(_)
+                            | Value::Hash(_) => {
+                                let idx = match self.constant_pool.iter().position(|x| x == &v) {
+                                    Some(expr) => expr as u8,
+                                    None => {
+                                        self.constant_pool.push(v);
+                                        (self.constant_pool.len() - 1) as u8
+                                    }
+                                };
+
+                                self.add_inst(IrOp::LoadConst {
+                                    dest: address,
+                                    idx: idx,
+                                });
+                            }
+                        }
                     }
                     _ => {
                         let res = self.compile(*value);
 
-                        self.emit_op(OpCode::Load);
-                        self.emit(address);
-
-                        self.emit_op(OpCode::ConstReg);
-
-                        self.emit(res);
+                        self.add_inst(IrOp::LoadReg {
+                            dest: address,
+                            src: res,
+                        });
                     }
                 };
 
@@ -494,92 +532,200 @@ impl Compiler {
             }
             Ast::Value(val) => {
                 if let ParserValue::Ref(ref ref_val) = val {
-                    let reg = self.current().resolve_local(&ref_val);
+                    if let Some(reg) = self.current().resolve_local(ref_val) {
+                        return reg;
+                    }
 
-                    if reg.is_some() {
-                        return reg.unwrap();
+                    if self.contexts.len() > 1 {
+                        if let Some(&global_reg) = self.contexts[0].top_level_names.get(ref_val) {
+                            let dest_reg = self.next_free_address();
+
+                            self.add_inst(IrOp::LoadGlobal {
+                                dest: dest_reg,
+                                src: global_reg,
+                            });
+
+                            return dest_reg;
+                        }
                     }
 
                     if let Some(_std_func) = self.std.functions.iter().find(|f| f.name == ref_val) {
-                        if let Some(addr) = self.current().loaded_natives.get(ref_val) {
-                            return *addr;
-                        }
-
                         let reg = self.next_free_address();
-
-                        let hash = Value::Hash(Value::String(ref_val.to_string()).get_hash());
+                        let hash =
+                            Value::Hash(Value::String(ref_val.to_string().into()).get_hash());
 
                         let idx = match self.constant_pool.iter().position(|c| *c == hash) {
                             Some(hash_idx) => hash_idx,
                             None => {
                                 self.constant_pool.push(hash);
-
                                 self.constant_pool.len() - 1
                             }
                         };
 
-                        self.emit_vec(vec![OpCode::LoadNative as u8, reg, idx as u8]);
-                        self.current().loaded_natives.insert(ref_val.clone(), reg);
-                        return reg as u8;
+                        self.add_inst(IrOp::LoadNative {
+                            dest: reg,
+                            src: idx as u8,
+                        });
+
+                        return reg;
                     }
                 }
 
                 let reg = self.next_free_address();
+                let v = self.convert_const(val.clone());
 
-                self.emit_op(OpCode::Load);
-                self.emit(reg);
+                match v {
+                    Value::Int(i) => self.add_inst(IrOp::LoadInt { dest: reg, val: i }),
+                    Value::Double(d) => self.add_inst(IrOp::LoadDouble { dest: reg, val: d }),
+                    Value::Bool(b) => self.add_inst(IrOp::LoadBool { dest: reg, val: b }),
+                    Value::Ref(r) => {
+                        if let Some(reg) = self.current().resolve_local(&r) {
+                            self.add_inst(IrOp::LoadReg {
+                                dest: reg,
+                                src: reg,
+                            });
+                            return reg;
+                        }
 
-                self.compile_const(val);
+                        let hash = Value::Hash(Value::String(r.clone()).get_hash());
+                        let reg = match self.constant_pool.iter().position(|x| x == &hash) {
+                            Some(idx) => idx as u8,
+                            None => {
+                                self.constant_pool.push(hash);
+                                (self.constant_pool.len() - 1) as u8
+                            }
+                        };
+
+                        self.add_inst(IrOp::LoadConst {
+                            dest: reg,
+                            idx: reg,
+                        });
+                    }
+                    Value::Fun { arity: _, body: _ }
+                    | Value::Object(_)
+                    | Value::String(_)
+                    | Value::NativeFun(_)
+                    | Value::Hash(_) => {
+                        let idx = match self.constant_pool.iter().position(|x| x == &v) {
+                            Some(expr) => expr as u8,
+                            None => {
+                                self.constant_pool.push(v);
+                                (self.constant_pool.len() - 1) as u8
+                            }
+                        };
+
+                        self.add_inst(IrOp::LoadConst {
+                            dest: reg,
+                            idx: idx,
+                        });
+                    }
+                }
+
                 reg
             }
             Ast::Object(entries) => {
                 let obj_reg = self.next_free_address();
-                let obj_val = Value::Object(Rc::new(RefCell::new(HashMap::new())));
-                let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
-                    Some(idx) => idx,
-                    None => {
-                        self.constant_pool.push(obj_val);
-                        self.constant_pool.len() - 1
+
+                let is_fully_static = entries
+                    .iter()
+                    .all(|(_, val_ast)| matches!(val_ast, Ast::Value(_)));
+
+                if is_fully_static {
+                    let mut static_map = FxHashMap::default();
+
+                    for (key_ast, val_ast) in entries {
+                        let hash_key = if let Ast::Value(val) = key_ast {
+                            let converted = self.convert_const(val);
+                            converted.get_hash()
+                        } else {
+                            unreachable!()
+                        };
+
+                        let static_val = if let Ast::Value(val) = val_ast {
+                            self.convert_const(val)
+                        } else {
+                            unreachable!()
+                        };
+
+                        static_map.insert(hash_key, static_val);
                     }
-                };
 
-                self.emit_op(OpCode::Load);
-                self.emit(obj_reg);
-                self.emit_op(OpCode::ConstObj);
-                self.emit(obj_idx as u8);
-
-                for (key_ast, val_ast) in entries {
-                    let hash_idx = if let Ast::Value(val) = key_ast {
-                        let converted = self.convert_const(val);
-                        let hash = Value::Hash(converted.get_hash());
-                        match self.constant_pool.iter().position(|c| *c == hash) {
-                            Some(idx) => idx,
-                            None => {
-                                self.constant_pool.push(hash);
-                                self.constant_pool.len() - 1
-                            }
+                    let obj_val = Value::Object(Rc::new(RefCell::new(static_map)));
+                    let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
+                        Some(idx) => idx,
+                        None => {
+                            self.constant_pool.push(obj_val);
+                            self.constant_pool.len() - 1
                         }
-                    } else {
-                        panic!("Dynamic keys in object literals not yet supported");
                     };
 
-                    let val_reg = self.compile(val_ast);
+                    self.add_inst(IrOp::LoadObject {
+                        dest: obj_reg,
+                        src: obj_idx as u8,
+                    });
+                } else {
+                    let obj_val = Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
+                    let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
+                        Some(idx) => idx,
+                        None => {
+                            self.constant_pool.push(obj_val);
+                            self.constant_pool.len() - 1
+                        }
+                    };
 
-                    self.emit_op(OpCode::SetProperty);
-                    self.emit(obj_reg);
-                    self.emit(hash_idx as u8);
-                    self.emit(val_reg);
+                    self.add_inst(IrOp::LoadObject {
+                        dest: obj_reg,
+                        src: obj_idx as u8,
+                    });
+
+                    for (key_ast, val_ast) in entries {
+                        if let Ast::Value(val) = key_ast {
+                            let converted = self.convert_const(val);
+                            let hash = Value::Hash(converted.get_hash());
+                            let hash_idx = match self.constant_pool.iter().position(|c| *c == hash)
+                            {
+                                Some(idx) => idx,
+                                None => {
+                                    self.constant_pool.push(hash);
+                                    self.constant_pool.len() - 1
+                                }
+                            };
+
+                            let val_reg = self.compile(val_ast);
+
+                            self.add_inst(IrOp::SetProperty {
+                                obj: obj_reg,
+                                key: hash_idx as u8,
+                                val: val_reg,
+                            });
+                        } else {
+                            let key_reg = self.compile(key_ast);
+                            let val_reg = self.compile(val_ast);
+
+                            self.add_inst(IrOp::SetPropertyDyn {
+                                obj: obj_reg,
+                                key: key_reg as u8,
+                                val: val_reg,
+                            });
+                        }
+                    }
                 }
+
                 obj_reg
             }
             Ast::Return { value } | Ast::Raise { value } => {
                 let reg = self.compile(*value);
-                self.emit_op(OpCode::Return);
-                self.emit(reg);
+                self.add_inst(IrOp::Return { value: reg });
+
                 0
             }
             Ast::Call { what, args } => {
-                let (caller, final_args) = if let Ast::Dot { accessor, access } = *what.clone() {
+                let (caller, final_args) = if let Ast::Dot {
+                    accessor,
+                    access,
+                    resolve: _,
+                } = *what.clone()
+                {
                     let is_ufcs = if let Ast::Value(ParserValue::Ref(ref name)) = *access {
                         self.current().resolve_local(name).is_some()
                             || self.std.functions.iter().any(|f| f.name == name)
@@ -603,16 +749,13 @@ impl Compiler {
                     compiled_args.push(self.compile(arg.clone()));
                 }
 
-                self.emit_op(OpCode::Call);
-
                 let return_adr = self.next_free_address();
-                self.emit(return_adr);
 
-                self.emit(caller);
-
-                self.emit(final_args.len().try_into().unwrap());
-
-                compiled_args.iter().for_each(|arg| self.emit(*arg));
+                self.add_inst(IrOp::Call {
+                    dest: return_adr,
+                    what: caller,
+                    args: compiled_args.clone(),
+                });
 
                 return_adr
             }
@@ -624,27 +767,14 @@ impl Compiler {
                 let compiled_left = self.compile(*left);
                 let compiled_right = self.compile(*right);
 
-                self.emit_op(OpCode::Binary);
-
-                let op_code = match operator {
-                    crate::parser::BinaryOperator::Add => 0,
-                    crate::parser::BinaryOperator::Minus => 1,
-                    crate::parser::BinaryOperator::Multiply => 2,
-                    crate::parser::BinaryOperator::Divide => 3,
-                    crate::parser::BinaryOperator::Equals => 4,
-                    crate::parser::BinaryOperator::GreaterThan => 5,
-                    crate::parser::BinaryOperator::LessThan => 6,
-                    crate::parser::BinaryOperator::Modulo => 7,
-                };
-
-                self.emit(op_code);
-
                 let reg = self.next_free_address();
 
-                self.emit(reg);
-
-                self.emit(compiled_left);
-                self.emit(compiled_right);
+                self.add_inst(IrOp::Binary {
+                    dest: reg,
+                    op: operator,
+                    left: compiled_left,
+                    right: compiled_right,
+                });
 
                 reg
             }
@@ -666,22 +796,25 @@ impl Compiler {
 
                 let cond = self.compile(*condition);
 
-                self.emit_op(OpCode::JumpNot);
-                self.emit(cond);
-                let jump_to_else_pos = self.emit_jump();
+                let else_label = self.new_label();
+                let end_label = self.new_label();
+
+                self.add_inst(IrOp::JumpNot {
+                    condition: cond,
+                    target: else_label,
+                });
 
                 self.compile(*then_branch);
 
                 if let Some(else_body) = else_branch {
-                    let skip_else_pos = self.emit_jump_op(OpCode::JumpBy);
-
-                    self.patch_jump(jump_to_else_pos);
+                    self.add_inst(IrOp::Jump { target: end_label });
+                    self.add_inst(IrOp::Label(else_label));
 
                     self.compile(*else_body);
 
-                    self.patch_jump(skip_else_pos);
+                    self.add_inst(IrOp::Label(end_label));
                 } else {
-                    self.patch_jump(jump_to_else_pos);
+                    self.add_inst(IrOp::Label(else_label));
                 }
 
                 0
@@ -690,37 +823,30 @@ impl Compiler {
             Ast::BreakCode => self.compile_break(),
             Ast::Ignore => 0,
             Ast::For { condition, body } => {
-                let start = self.current().bytecode.len();
+                let start_label = self.new_label();
+                let end_label = self.new_label();
+
+                self.add_inst(IrOp::Label(start_label));
 
                 let cond_reg = self.compile(*condition);
 
-                self.emit_op(OpCode::JumpNot);
-
-                self.emit(cond_reg);
-
-                let pos = self.emit_jump();
+                self.add_inst(IrOp::JumpNot {
+                    target: end_label,
+                    condition: cond_reg,
+                });
 
                 self.current().loop_stack.push(LoopContext {
-                    target: start,
-                    jump_list: vec![],
+                    start: start_label,
+                    end: end_label,
                 });
 
                 self.compile(*body);
 
-                self.emit_op(OpCode::JumpBack);
+                self.add_inst(IrOp::Jump {
+                    target: start_label,
+                });
 
-                let back_offset = (self.current().bytecode.len() + 2) - start;
-
-                self.emit16(back_offset as u16);
-
-                let loop_ctx = self.current().loop_stack.pop().unwrap();
-                let loop_exit_pos = self.current().bytecode.len();
-
-                self.patch_jump(pos);
-
-                for placeholder in loop_ctx.jump_list {
-                    self.patch_jump_to_target(placeholder, loop_exit_pos);
-                }
+                self.add_inst(IrOp::Label(end_label));
 
                 0
             }
@@ -775,6 +901,8 @@ impl Compiler {
 
                 for ast in code {
                     self.compile(ast);
+
+                    self.current().next_free_register = self.current().local_count;
                 }
 
                 self.current().end_scope();
@@ -782,33 +910,49 @@ impl Compiler {
                 0
             }
 
-            Ast::Dot { accessor, access } => {
+            Ast::Dot {
+                accessor,
+                access,
+                resolve,
+            } => {
                 if let Ast::Set { name, value } = *access {
                     return self.compile(Ast::Set {
                         name: Box::new(Ast::Dot {
                             accessor: accessor,
                             access: name,
+                            resolve: resolve,
                         }),
                         value: value,
                     });
                 }
 
                 let compiled_accessor = self.compile(*accessor);
-
-                self.emit_op(OpCode::GetProperty);
                 let reg = self.next_free_address();
-                self.emit(reg);
 
-                if let Ast::Value(val) = *access {
-                    self.emit(compiled_accessor);
-                    let converted = self.convert_const(val);
-                    let access = converted.get_hash();
+                if resolve {
+                    let compiled_access = self.compile(*access);
 
-                    self.constant_pool.push(Value::Hash(access));
-
-                    self.emit((self.constant_pool.len() - 1) as u8);
+                    self.add_inst(IrOp::GetPropertyDyn {
+                        dest: reg,
+                        obj: compiled_accessor,
+                        key: compiled_access,
+                    });
                 } else {
-                    panic!("Unexpected type as value")
+                    if let Ast::Value(val) = *access {
+                        let converted = self.convert_const(val);
+                        let access_hash = converted.get_hash();
+
+                        self.constant_pool.push(Value::Hash(access_hash));
+                        let hash_idx = (self.constant_pool.len() - 1) as u8;
+
+                        self.add_inst(IrOp::GetProperty {
+                            dest: reg,
+                            obj: compiled_accessor,
+                            key: hash_idx,
+                        });
+                    } else {
+                        panic!("AST Error: Static property access requires Ast::Value");
+                    }
                 }
 
                 reg
@@ -819,50 +963,113 @@ impl Compiler {
                     ParserValue::Ref(name) => {
                         let dest = self.current().resolve_local(&name);
 
-                        let reg = dest.unwrap_or_else(|| self.current().add_local(name));
+                        let lhs_reg = dest.unwrap_or_else(|| self.current().add_local(name));
 
                         if let Ast::Value(raw) = *value {
-                            self.emit_op(OpCode::Load);
-                            self.emit(reg);
+                            let v = self.convert_const(raw.clone());
 
-                            self.compile_const(raw);
+                            match v {
+                                Value::Int(i) => self.add_inst(IrOp::LoadInt {
+                                    dest: lhs_reg,
+                                    val: i,
+                                }),
+                                Value::Double(d) => self.add_inst(IrOp::LoadDouble {
+                                    dest: lhs_reg,
+                                    val: d,
+                                }),
+                                Value::Bool(b) => self.add_inst(IrOp::LoadBool {
+                                    dest: lhs_reg,
+                                    val: b,
+                                }),
+                                Value::Ref(r) => {
+                                    if let Some(rhs_reg) = self.current().resolve_local(&r) {
+                                        self.add_inst(IrOp::LoadReg {
+                                            dest: lhs_reg,
+                                            src: rhs_reg,
+                                        });
+                                        return lhs_reg;
+                                    }
+
+                                    let hash = Value::Hash(Value::String(r.clone()).get_hash());
+                                    let hash_reg =
+                                        match self.constant_pool.iter().position(|x| x == &hash) {
+                                            Some(idx) => idx as u8,
+                                            None => {
+                                                self.constant_pool.push(hash);
+                                                (self.constant_pool.len() - 1) as u8
+                                            }
+                                        };
+
+                                    self.add_inst(IrOp::LoadConst {
+                                        dest: lhs_reg,
+                                        idx: hash_reg,
+                                    });
+                                }
+                                Value::Fun { arity: _, body: _ }
+                                | Value::Object(_)
+                                | Value::String(_)
+                                | Value::NativeFun(_)
+                                | Value::Hash(_) => {
+                                    let idx = match self.constant_pool.iter().position(|x| x == &v)
+                                    {
+                                        Some(expr) => expr as u8,
+                                        None => {
+                                            self.constant_pool.push(v);
+                                            (self.constant_pool.len() - 1) as u8
+                                        }
+                                    };
+
+                                    self.add_inst(IrOp::LoadConst {
+                                        dest: lhs_reg,
+                                        idx: idx,
+                                    });
+                                }
+                            }
                         } else {
                             let res = self.compile(*value);
 
-                            self.emit_op(OpCode::Load);
-                            self.emit(reg);
-
-                            self.emit_op(OpCode::ConstReg);
-
-                            self.emit(res);
+                            self.add_inst(IrOp::LoadReg {
+                                dest: lhs_reg,
+                                src: res,
+                            });
                         }
                         0
                     }
                     _ => panic!("WrongType"),
                 },
-                Ast::Dot { accessor, access } => {
+                Ast::Dot {
+                    accessor,
+                    access,
+                    resolve,
+                } => {
                     let compiled_accessor = self.compile(*accessor);
-
                     let compiled_value = self.compile(*value);
 
-                    let hash_access = if let Ast::Value(val) = *access {
-                        let converted = self.convert_const(val);
-                        let hash_access = converted.get_hash();
+                    if resolve {
+                        let compiled_access = self.compile(*access);
 
-                        self.constant_pool.push(Value::Hash(hash_access));
-
-                        (self.constant_pool.len() - 1) as u8
+                        self.add_inst(IrOp::SetPropertyDyn {
+                            obj: compiled_accessor,
+                            key: compiled_access,
+                            val: compiled_value,
+                        });
                     } else {
-                        panic!("Unexpected value");
-                    };
+                        if let Ast::Value(val) = *access {
+                            let converted = self.convert_const(val);
+                            let hash_access = converted.get_hash();
 
-                    self.emit_op(OpCode::SetProperty);
+                            self.constant_pool.push(Value::Hash(hash_access));
+                            let hash_idx = (self.constant_pool.len() - 1) as u8;
 
-                    self.emit(compiled_accessor);
-
-                    self.emit(hash_access);
-
-                    self.emit(compiled_value);
+                            self.add_inst(IrOp::SetProperty {
+                                obj: compiled_accessor,
+                                key: hash_idx,
+                                val: compiled_value,
+                            });
+                        } else {
+                            panic!("AST Error: Static property assignment requires Ast::Value");
+                        }
+                    }
 
                     0
                 }
@@ -890,21 +1097,24 @@ impl Compiler {
                 };
 
                 let module_reg = self.next_free_address();
-                self.emit_op(OpCode::Load);
-                self.emit(module_reg);
-                self.emit_op(OpCode::ConstFun);
-                self.emit(fun_idx as u8);
+
+                self.add_inst(IrOp::LoadFun {
+                    dest: module_reg,
+                    src: fun_idx as u8,
+                });
 
                 let res_reg = self.next_free_address();
-                self.emit_op(OpCode::Call);
-                self.emit(res_reg);
-                self.emit(module_reg);
-                self.emit(0);
+
+                self.add_inst(IrOp::Call {
+                    dest: res_reg,
+                    what: module_reg,
+                    args: vec![],
+                });
 
                 if let Some(map) = import_map {
                     for name in map {
                         let reg = self.current().add_local(name.clone());
-                        let hash = Value::Hash(Value::String(name).get_hash());
+                        let hash = Value::Hash(Value::String(name.into()).get_hash());
                         let hash_idx = match self.constant_pool.iter().position(|c| *c == hash) {
                             Some(idx) => idx,
                             None => {
@@ -913,10 +1123,11 @@ impl Compiler {
                             }
                         };
 
-                        self.emit_op(OpCode::GetProperty);
-                        self.emit(reg);
-                        self.emit(res_reg);
-                        self.emit(hash_idx as u8);
+                        self.add_inst(IrOp::GetProperty {
+                            dest: reg,
+                            obj: res_reg,
+                            key: hash_idx as u8,
+                        });
                     }
                 }
 
@@ -927,11 +1138,8 @@ impl Compiler {
 
     fn compile_continue(&mut self) -> u8 {
         if let Some(loop_ctx) = self.current().loop_stack.last() {
-            let target = loop_ctx.target;
-            self.emit_op(OpCode::JumpBack);
-            let offset = ((self.current().bytecode.len() + 2) - target).to_le_bytes();
-            self.emit(offset[0]);
-            self.emit(offset[1]);
+            let start = loop_ctx.start;
+            self.add_inst(IrOp::Jump { target: start })
         } else {
             panic!("Invalid keyword: 'continue' used out of loop");
         }
@@ -940,14 +1148,9 @@ impl Compiler {
     }
 
     fn compile_break(&mut self) -> u8 {
-        let in_loop = !self.current().loop_stack.is_empty();
-
-        if in_loop {
-            let placeholder = self.emit_jump_op(OpCode::Jump);
-
-            if let Some(loop_ctx) = self.current().loop_stack.last_mut() {
-                loop_ctx.jump_list.push(placeholder);
-            }
+        if let Some(loop_ctx) = self.current().loop_stack.last() {
+            let end = loop_ctx.end;
+            self.add_inst(IrOp::Jump { target: end });
         } else {
             panic!("Cannot use 'break' outside of a loop");
         }
@@ -960,12 +1163,12 @@ impl Compiler {
             ParserValue::Int(int) => Value::Int(int),
             ParserValue::Double(dbl) => Value::Double(dbl),
             ParserValue::Bool(bol) => Value::Bool(bol),
-            ParserValue::String(string) => Value::String(string),
+            ParserValue::String(string) => Value::String(string.into()),
             ParserValue::Ref(reference) => {
                 if let Some(native) = self.std.functions.iter().find(|f| f.name == reference) {
                     return Value::NativeFun(native.clone());
                 }
-                Value::Ref(reference)
+                Value::Ref(reference.into())
             }
             ParserValue::Fun { args, body } => {
                 self.contexts.push(Context::new());
@@ -982,13 +1185,13 @@ impl Compiler {
 
                 Value::Fun {
                     arity,
-                    body: fun.bytecode,
+                    body: Emitter {}.emit(fun.ir_buff),
                 }
             }
             ParserValue::Object(entries) => {
                 self.contexts.push(Context::new());
 
-                let mut entries_compiled = HashMap::new();
+                let mut entries_compiled = FxHashMap::default();
 
                 for (key, value) in entries {
                     let converted = self.convert_const(key);
@@ -1000,14 +1203,6 @@ impl Compiler {
                 self.contexts.pop();
 
                 Value::Object(Rc::new(RefCell::new(entries_compiled)))
-            }
-            ParserValue::List(entries) => {
-                let obj_entries = entries
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, val)| (ParserValue::Int(idx.try_into().unwrap()), val.clone()))
-                    .collect();
-                return self.convert_const(ParserValue::Object(obj_entries));
             }
         };
     }

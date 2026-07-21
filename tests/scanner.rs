@@ -2,10 +2,11 @@
 mod tests {
     use parts::scanner::Scanner;
     use parts::scanner::ScannerError;
+    use parts::scanner::Span;
     use parts::scanner::Token;
     use parts::scanner::TokenType;
     use parts::scanner_rules::ScannerRule;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     #[test]
     fn check_operator() {
@@ -16,7 +17,14 @@ mod tests {
         assert!(at_token.is_ok());
         assert_eq!(
             at_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Operator, vec!['A', 'T'])
+            Token {
+                kind: TokenType::Operator,
+                lexeme: "AT".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let eof = s.get_next();
@@ -24,7 +32,14 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 
@@ -37,7 +52,14 @@ mod tests {
         assert!(at_token.is_ok());
         assert_eq!(
             at_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Operator, vec!['A', 'T'])
+            Token {
+                kind: TokenType::Operator,
+                lexeme: "AT".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let plus_token = s.get_next();
@@ -45,7 +67,14 @@ mod tests {
         assert!(plus_token.is_ok());
         assert_eq!(
             plus_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Operator, vec!['P', 'L', 'U', 'S'])
+            Token {
+                kind: TokenType::Operator,
+                lexeme: "PLUS".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let eof = s.get_next();
@@ -53,17 +82,24 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 
     #[test]
     fn invalid_token() {
-        let mut s = Scanner::new(ScannerRule::get_default_rules(), "|".to_string());
+        let mut s = Scanner::new(ScannerRule::get_default_rules(), "?".to_string());
 
         let at_token = s.get_next();
 
-        assert!(at_token.is_err_and(|e| e == ScannerError::InvalidOperator("|".to_string())));
+        assert!(at_token.is_err_and(|e| e == ScannerError::InvalidOperator("?".to_string())));
     }
 
     #[test]
@@ -73,9 +109,11 @@ mod tests {
                 result: TokenType::Operator,
                 base_rule: None,
                 rule: None,
-                process: Some(Box::new(|_mappings, _runs| Err(ScannerError::UnknownToken))),
+                process: Some(Box::new(|_mappings, _runs, _span| {
+                    Err(ScannerError::UnknownToken('y'))
+                })),
                 skip: false,
-                mappings: HashMap::new(),
+                mappings: FxHashMap::default(),
                 valid_chars: vec![],
             }],
             "x".to_string(),
@@ -83,7 +121,7 @@ mod tests {
 
         let at_token = s.get_next();
 
-        assert!(at_token.is_err_and(|e| e == ScannerError::UnknownToken))
+        assert!(at_token.is_err_and(|e| e == ScannerError::UnknownToken('x')))
     }
 
     #[test]
@@ -95,7 +133,14 @@ mod tests {
         assert!(num_token.is_ok());
         assert_eq!(
             num_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Number, vec!['1'])
+            Token {
+                kind: TokenType::Number,
+                lexeme: "1".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
     }
 
@@ -108,7 +153,14 @@ mod tests {
         assert!(num_token.is_ok());
         assert_eq!(
             num_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Number, "3.14".chars().collect::<Vec<char>>())
+            Token {
+                kind: TokenType::Number,
+                lexeme: "3.14".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
     }
 
@@ -122,7 +174,14 @@ mod tests {
         assert!(false_token.is_ok());
         assert_eq!(
             false_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Keyword, "FALSE".chars().collect::<Vec<char>>())
+            Token {
+                kind: TokenType::Keyword,
+                lexeme: "FALSE".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
     }
 
@@ -135,7 +194,14 @@ mod tests {
         assert!(false_token.is_ok());
         assert_eq!(
             false_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::Identifier, "flse".chars().collect::<Vec<char>>())
+            Token {
+                kind: TokenType::Identifier,
+                lexeme: "flse".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
     }
 
@@ -148,7 +214,14 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 
@@ -161,7 +234,14 @@ mod tests {
         assert!(string_token.is_ok());
         assert_eq!(
             string_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::String, vec![])
+            Token {
+                kind: TokenType::String,
+                lexeme: "".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let eof = s.get_next();
@@ -169,7 +249,14 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 
@@ -182,7 +269,14 @@ mod tests {
         assert!(string_token.is_ok());
         assert_eq!(
             string_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::String, vec![])
+            Token {
+                kind: TokenType::String,
+                lexeme: "".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let eof = s.get_next();
@@ -190,7 +284,14 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 
@@ -203,7 +304,14 @@ mod tests {
         assert!(string_token.is_ok());
         assert_eq!(
             string_token.as_ref().unwrap().to_owned(),
-            Token(TokenType::String, vec!['`', '`'])
+            Token {
+                kind: TokenType::String,
+                lexeme: "``".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         );
 
         let eof = s.get_next();
@@ -211,7 +319,14 @@ mod tests {
         assert!(eof.is_ok());
         assert_eq!(
             eof.as_ref().unwrap().to_owned(),
-            Token(TokenType::Special, vec!['E', 'O', 'F'])
+            Token {
+                kind: TokenType::Special,
+                lexeme: "EOF".to_string(),
+                span: Span {
+                    line: 0,
+                    column: 0
+                }
+            }
         )
     }
 }

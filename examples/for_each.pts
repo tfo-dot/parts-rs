@@ -1,7 +1,0 @@
-let std = import `@std/std.pts`;
-
-let x = |> file: "*.pts", index: 0, alive: true <|
-
-for item in x {
-	std.println(item)
-}

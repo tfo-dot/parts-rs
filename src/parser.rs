@@ -1,8 +1,8 @@
 use crate::parser_rules::ParserRule;
 use crate::parser_rules_postfix::PostfixRule;
-use crate::scanner::{Scanner, ScannerError, Token, TokenType};
+use crate::scanner::{Scanner, ScannerError, Span, Token, TokenType};
 use crate::scanner_rules::ScannerRule;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug)]
 pub struct MacroDef {
@@ -20,14 +20,14 @@ pub struct MacroArm {
 pub enum Error {
     RuleNotFound,
     ScannerError(ScannerError),
-    TokenMismatch,
+    TokenMismatch(Token, Token),
     UnknownRule(Token),
 }
 
 #[derive(Debug)]
 pub struct Parser {
     /** Last token returned from scanner */
-    last_token: Token,
+    pub(crate) last_token: Token,
 
     /** Set of top level rules */
     rules: Vec<ParserRule>,
@@ -36,18 +36,22 @@ pub struct Parser {
     /** Internal scanner */
     scanner: Scanner,
     /** Macro definitions */
-    macros: HashMap<String, MacroDef>,
+    macros: FxHashMap<String, MacroDef>,
 }
 
 impl Parser {
     #[must_use]
     pub fn new(src: String) -> Self {
         Self {
-            last_token: Token(TokenType::Special, vec![]),
+            last_token: Token {
+                kind: TokenType::Special,
+                lexeme: "".to_string(),
+                span: Span { column: 0, line: 0 },
+            },
             rules: ParserRule::get_default_rules(),
             rules_postfix: PostfixRule::get_default_rules(),
             scanner: Scanner::new(ScannerRule::get_default_rules(), src),
-            macros: HashMap::new(),
+            macros: FxHashMap::default(),
         }
     }
 
@@ -55,7 +59,9 @@ impl Parser {
         let mut buf: Vec<Ast> = vec![];
 
         loop {
-            if self.last_token.0 == TokenType::Special && self.last_token.1 == vec!['E', 'O', 'F'] {
+            if self.last_token.kind == TokenType::Special
+                && self.last_token.lexeme == "EOF".to_string()
+            {
                 break;
             }
 
@@ -109,8 +115,7 @@ impl Parser {
             }
         }
 
-        let temp = self.peek()?;
-        Err(Error::UnknownRule(temp))
+        Err(Error::UnknownRule(self.peek()?))
     }
 
     pub fn parse_rule(&mut self, id: &str) -> Result<Ast, Error> {
@@ -133,11 +138,19 @@ impl Parser {
     }
 
     pub fn match_operator(&mut self, op: &str) -> bool {
-        self.match_token(Token(TokenType::Operator, op.chars().collect()))
+        self.match_token(Token {
+            kind: TokenType::Operator,
+            lexeme: op.to_string(),
+            span: Span { column: 0, line: 0 },
+        })
     }
 
     pub fn match_keyword(&mut self, kw: &str) -> bool {
-        self.match_token(Token(TokenType::Keyword, kw.chars().collect()))
+        self.match_token(Token {
+            kind: TokenType::Keyword,
+            lexeme: kw.to_string(),
+            span: Span { column: 0, line: 0 },
+        })
     }
 
     pub fn match_token(&mut self, tok: Token) -> bool {
@@ -165,7 +178,7 @@ impl Parser {
     }
 
     pub fn peek(&mut self) -> Result<Token, Error> {
-        if self.last_token.0 == TokenType::Special && self.last_token.1 == vec![] {
+        if self.last_token.kind == TokenType::Special && self.last_token.lexeme.is_empty() {
             let tok = self.scanner.get_next().map_err(Error::ScannerError)?;
 
             self.last_token = tok;
@@ -176,23 +189,34 @@ impl Parser {
 
     pub fn add_macro(&mut self, name: Token, macro_def: Vec<MacroArm>) {
         self.macros
-            .insert(name.1.into_iter().collect(), MacroDef { arms: macro_def });
+            .insert(name.lexeme, MacroDef { arms: macro_def });
     }
 
     pub fn handle_macro(&mut self, id: &str, tokens: Vec<Token>) -> Result<(), Error> {
         let macro_def = self.macros.get(id).ok_or(Error::RuleNotFound)?;
 
         for arm in &macro_def.arms {
+            let mut map = FxHashMap::default();
             let mut has_match = true;
-            let mut map = HashMap::new();
 
             for (idx, tok) in tokens.iter().enumerate() {
-                if arm.pattern.len() < idx {
-                    return Err(Error::RuleNotFound);
+                if arm.pattern.len() == 1
+                    && arm.pattern[0].lexeme == "AT"
+                    && arm.pattern[0].kind == TokenType::Operator
+                {
+                    has_match = true;
+                    break;
                 }
 
-                if arm.pattern[idx].1[0] == '@' && arm.pattern[idx].0 == TokenType::Identifier {
-                    map.insert(arm.pattern[idx].1.clone(), tok);
+                if arm.pattern.len() < idx + 1 {
+                    has_match = false;
+                    break;
+                }
+
+                if arm.pattern[idx].lexeme.starts_with("@")
+                    && arm.pattern[idx].kind == TokenType::Identifier
+                {
+                    map.insert(arm.pattern[idx].lexeme.clone(), tok);
                     continue;
                 }
 
@@ -200,27 +224,114 @@ impl Parser {
             }
 
             if has_match {
-                let result_stream: Vec<_> = arm
-                    .expansion
-                    .iter()
-                    .map(|t| {
-                        if t.0 == TokenType::Identifier && map.contains_key(&t.1) {
-                            return (*map.get(&t.1).unwrap()).clone();
-                        }
+                let result_stream: Vec<_> = if arm.pattern.len() == 1
+                    && arm.pattern[0].lexeme == "AT"
+                    && arm.pattern[0].kind == TokenType::Operator
+                {
+                    let mut buff = vec![];
 
-                        t.clone()
-                    })
-                    .collect();
+                    for t in &arm.expansion.clone() {
+                        if t.kind == TokenType::Operator && t.lexeme == "AT" {
+                            buff.extend(tokens.clone());
+                        } else {
+                            buff.push(t.clone());
+                        }
+                    }
+
+                    buff
+                } else {
+                    arm.expansion
+                        .iter()
+                        .map(|t| {
+                            if t.kind == TokenType::Identifier && map.contains_key(&t.lexeme) {
+                                return (*map.get(&t.lexeme).unwrap()).clone();
+                            }
+
+                            t.clone()
+                        })
+                        .collect()
+                };
 
                 self.scanner.append_stream(result_stream.clone());
 
                 return Ok(());
-            } else {
-                println!("Macro with no rule match");
             }
         }
 
         return Ok(());
+    }
+
+    pub fn expect_kind(&mut self, kind: TokenType) -> Result<Token, Error> {
+        let token = self.peek()?;
+        if token.kind == kind {
+            let _ = self.advance();
+            Ok(token)
+        } else {
+            Err(Error::TokenMismatch(
+                Token {
+                    kind,
+                    lexeme: String::new(),
+                    span: Span { line: 0, column: 0 },
+                },
+                token,
+            ))
+        }
+    }
+
+    pub fn expect_operator(&mut self, lexeme: &str) -> Result<Token, Error> {
+        let token = self.advance()?;
+        if token.kind == TokenType::Operator && token.lexeme == lexeme {
+            Ok(token)
+        } else {
+            Err(Error::TokenMismatch(
+                Token {
+                    kind: TokenType::Operator,
+                    lexeme: lexeme.to_string(),
+                    span: Span { line: 0, column: 0 },
+                },
+                token,
+            ))
+        }
+    }
+
+    pub fn expect_keyword(&mut self, lexeme: &str) -> Result<Token, Error> {
+        let token = self.advance()?;
+        if token.kind == TokenType::Keyword && token.lexeme == lexeme {
+            Ok(token)
+        } else {
+            Err(Error::TokenMismatch(
+                Token {
+                    kind: TokenType::Keyword,
+                    lexeme: lexeme.to_string(),
+                    span: Span { line: 0, column: 0 },
+                },
+                token,
+            ))
+        }
+    }
+
+    pub fn check_keyword(&mut self, lexeme: &str) -> bool {
+        if let Ok(token) = self.peek() {
+            token.kind == TokenType::Keyword && token.lexeme == lexeme
+        } else {
+            false
+        }
+    }
+
+    pub fn check_operator(&mut self, lexeme: &str) -> bool {
+        if let Ok(token) = self.peek() {
+            token.kind == TokenType::Operator && token.lexeme == lexeme
+        } else {
+            false
+        }
+    }
+
+    pub fn check_kind(&mut self, kind: TokenType) -> bool {
+        if let Ok(token) = self.peek() {
+            token.kind == kind
+        } else {
+            false
+        }
     }
 }
 
@@ -272,6 +383,7 @@ pub enum Ast {
     Dot {
         accessor: Box<Ast>,
         access: Box<Ast>,
+        resolve: bool,
     },
     Set {
         name: Box<Ast>,
@@ -293,6 +405,7 @@ pub enum ImportType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(PartialOrd)]
 pub enum BinaryOperator {
     Add,
     Minus,
@@ -301,7 +414,14 @@ pub enum BinaryOperator {
     Equals,
     GreaterThan,
     LessThan,
+    GreaterThanOrEqual,
+    LessThanOrEqual,
     Modulo,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitSHL,
+    BitSHR,
 }
 
 #[derive(Debug, Clone)]
@@ -313,7 +433,6 @@ pub enum Value {
     Ref(String),
     Fun { args: Vec<String>, body: Box<Ast> },
     Object(Vec<(Value, Value)>),
-    List(Vec<Value>),
 }
 
 impl PartialEq for Value {
@@ -328,7 +447,6 @@ impl PartialEq for Value {
                 a1 == a2 && b1 == b2
             }
             (Value::Object(v1), Value::Object(v2)) => v1 == v2,
-            (Value::List(v1), Value::List(v2)) => v1 == v2,
             _ => false,
         }
     }
@@ -366,10 +484,6 @@ impl Hash for Value {
             }
             Value::Object(v) => {
                 state.write_u8(6);
-                v.hash(state);
-            }
-            Value::List(v) => {
-                state.write_u8(7);
                 v.hash(state);
             }
         }

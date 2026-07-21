@@ -12,7 +12,8 @@ mod tests {
             res.unwrap(),
             vec![Ast::Dot {
                 accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
-                access: Box::new(Ast::Value(Value::Ref("b".to_string())))
+                access: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                resolve: false
             }]
         );
     }
@@ -27,7 +28,8 @@ mod tests {
             res.unwrap(),
             vec![Ast::Dot {
                 accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
-                access: Box::new(Ast::Value(Value::Ref("b".to_string())))
+                access: Box::new(Ast::Value(Value::Ref("b".to_string()))),
+                resolve: true
             }]
         );
     }
@@ -140,17 +142,9 @@ mod tests {
         assert_eq!(
             res.unwrap(),
             vec![Ast::Binary {
-                left: Box::new(Ast::Binary {
-                    left: a.clone(),
-                    right: b.clone(),
-                    operator: BinaryOperator::GreaterThan
-                }),
-                right: Box::new(Ast::Binary {
-                    left: a,
-                    right: b,
-                    operator: BinaryOperator::Equals
-                }),
-                operator: BinaryOperator::Add
+                left: a,
+                right: b,
+                operator: BinaryOperator::GreaterThanOrEqual
             }]
         );
     }
@@ -183,17 +177,9 @@ mod tests {
         assert_eq!(
             res.unwrap(),
             vec![Ast::Binary {
-                left: Box::new(Ast::Binary {
-                    left: a.clone(),
-                    right: b.clone(),
-                    operator: BinaryOperator::LessThan
-                }),
-                right: Box::new(Ast::Binary {
-                    left: a,
-                    right: b,
-                    operator: BinaryOperator::Equals
-                }),
-                operator: BinaryOperator::Add
+                left: a,
+                right: b,
+                operator: BinaryOperator::LessThanOrEqual
             }]
         );
     }
@@ -270,7 +256,8 @@ mod tests {
             vec![Ast::Call {
                 what: Box::new(Ast::Dot {
                     accessor: Box::new(Ast::Value(Value::Ref("a".to_string()))),
-                    access: Box::new(Ast::Value(Value::Ref("f".to_string())))
+                    access: Box::new(Ast::Value(Value::Ref("f".to_string()))),
+                    resolve: false
                 }),
                 args: vec![Ast::Value(Value::Int(1))]
             }]

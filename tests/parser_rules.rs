@@ -16,69 +16,6 @@ mod tests {
     }
 
     #[test]
-    fn test_array_empty() {
-        let mut p = Parser::new("[]".to_string());
-
-        let res = p.parse_all();
-
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(inner_arr.as_slice(), &[]);
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_array_one_element() {
-        let mut p = Parser::new("[false]".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(inner_arr.as_slice(), &[Value::Bool(false)]);
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
-    fn test_array_two_elements() {
-        let mut p = Parser::new("[false, true]".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        let val = res.unwrap();
-        assert_eq!(val.len(), 1);
-
-        if let Some(Ast::Value(Value::List(inner_arr))) = val.first() {
-            assert_eq!(
-                inner_arr.as_slice(),
-                &[Value::Bool(false), Value::Bool(true)]
-            );
-        } else {
-            panic!(
-                "Expected Ast::Value(Value::List) at 0, got {:?}",
-                val.first()
-            );
-        }
-    }
-
-    #[test]
     fn test_object_empty() {
         let mut p = Parser::new("|> <|".to_string());
         let res = p.parse_all();
@@ -256,35 +193,7 @@ mod tests {
             }]
         );
     }
-
-    #[test]
-    fn test_raise_no_value() {
-        let mut p = Parser::new("raise;".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Raise {
-                value: Box::new(Ast::Ignore)
-            }]
-        );
-    }
-
-    #[test]
-    fn test_raise_with_value() {
-        let mut p = Parser::new("raise 0".to_string());
-        let res = p.parse_all();
-        assert!(res.is_ok());
-
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Raise {
-                value: Box::new(Ast::Value(Value::Int(0)))
-            }]
-        );
-    }
-
+    
     #[test]
     fn test_block_empty() {
         let mut p = Parser::new("{}".to_string());

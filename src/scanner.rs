@@ -6,6 +6,10 @@ pub struct Scanner {
     buffer: Vec<Token>,
     index: usize,
     source: String,
+
+    //Meta
+    line: usize,
+    column: usize,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -13,7 +17,7 @@ pub enum ScannerError {
     InvalidOperator(String),
     UnterminatedString,
     InvalidEscape,
-    UnknownToken,
+    UnknownToken(char),
 }
 
 impl Scanner {
@@ -23,7 +27,20 @@ impl Scanner {
             buffer: vec![],
             index: 0,
             source,
+            line: 1,
+            column: 0,
         }
+    }
+
+    fn create_eof(&self) -> Token {
+        return Token {
+            kind: TokenType::Special,
+            lexeme: "EOF".to_string(),
+            span: Span {
+                line: self.line,
+                column: self.column,
+            },
+        };
     }
 
     pub fn get_next(&mut self) -> Result<Token, ScannerError> {
@@ -34,13 +51,13 @@ impl Scanner {
         let ch = self.peek();
 
         if ch.is_none() {
-            return Ok(Token(TokenType::Special, "EOF".chars().collect()));
+            return Ok(self.create_eof());
         }
 
         for rule in &self.rules {
             if rule.base_rule.is_none() {
                 if rule.valid_chars.contains(&self.peek().unwrap()) {
-                    let res = Self::parse_rule(rule, &mut self.index, &self.source)?;
+                    let res = Self::parse_rule(rule, &mut self.index, &self.source, &mut self.line, &mut self.column)?;
 
                     if rule.skip || res.iter().len() == 0 {
                         return self.get_next();
@@ -60,7 +77,7 @@ impl Scanner {
             }
 
             if rule.base_rule.as_ref().unwrap()(&self.peek().unwrap()) {
-                let res = Self::parse_rule(rule, &mut self.index, &self.source)?;
+                let res = Self::parse_rule(rule, &mut self.index, &self.source, &mut self.line, &mut self.column)?;
 
                 if rule.skip || res.iter().len() == 0 {
                     return self.get_next();
@@ -78,10 +95,10 @@ impl Scanner {
         }
 
         if self.peek().is_none() {
-            return Ok(Token(TokenType::Special, "EOF".chars().collect()));
+            return Ok(self.create_eof());
         }
 
-        Err(ScannerError::UnknownToken)
+        Err(ScannerError::UnknownToken(self.peek().unwrap()))
     }
 
     pub fn peek(&self) -> Option<char> {
@@ -92,19 +109,35 @@ impl Scanner {
         rule: &ScannerRule,
         index: &mut usize,
         source: &str,
+        line: &mut usize,
+        column: &mut usize,
     ) -> Result<Vec<Token>, ScannerError> {
         let start = *index;
+
+        let start_span = Span {
+            line: *line,
+            column: *column,
+        };
 
         loop {
             *index += 1;
 
+            let ch = source.chars().nth(*index);
+
+            if let Some(c) = ch {
+                if c == '\n' {
+                    *line += 1;
+                    *column = 0;
+                } else {
+                    *column += 1;
+                }
+            }
+
             let out_of_bounds = *index >= source.len();
-            let no_base_but_valid = rule.base_rule.is_none()
-                && rule
-                    .valid_chars
-                    .contains(&source.chars().nth(*index).unwrap_or('\x00'));
-            let matches_base = rule.base_rule.is_some()
-                && rule.base_rule.as_ref().unwrap()(&source.chars().nth(*index).unwrap_or('\x00'));
+            let no_base_but_valid =
+                rule.base_rule.is_none() && rule.valid_chars.contains(&ch.unwrap_or('\x00'));
+            let matches_base =
+                rule.base_rule.is_some() && rule.base_rule.as_ref().unwrap()(&ch.unwrap_or('\x00'));
             let matches_whole =
                 rule.rule.is_none() || rule.rule.as_ref().unwrap()(&source[start..*index]);
 
@@ -114,23 +147,44 @@ impl Scanner {
         }
 
         if rule.process.is_some() {
-            return rule.process.as_ref().unwrap()(&rule.mappings, &source[start..*index]);
+            return rule.process.as_ref().unwrap()(
+                &rule.mappings,
+                &source[start..*index],
+                start_span,
+            );
         }
 
-        Ok(vec![Token(
-            rule.result.clone(),
-            source[start..*index].chars().collect(),
-        )])
+        Ok(vec![Token {
+            kind: rule.result.clone(),
+            lexeme: source[start..*index].chars().collect(),
+            span: start_span,
+        }])
     }
 
     pub fn append_stream(&mut self, mut tokens: Vec<Token>) {
         tokens.reverse();
-        self.buffer.extend(tokens);
+        self.buffer.splice(0..0, tokens);
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token(pub TokenType, pub Vec<char>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub kind: TokenType,
+    pub lexeme: String,
+    pub span: Span,
+}
+
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.lexeme == other.lexeme
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {

@@ -1,3 +1,0 @@
-let x(y) = {
-    return y + 2;
-}

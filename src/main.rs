@@ -1,5 +1,13 @@
 use clap::Parser;
-use parts::{compiler::Compiler, disassemble, parser::Parser as Partser, value::Value, vm::VM};
+use parts::{
+    compiler::Compiler,
+    disassemble,
+    emitter::Emitter,
+    optimize::{AstOptimizer, IrOptimizer},
+    parser::Parser as Partser,
+    value::Value,
+    vm::VM,
+};
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -19,6 +27,8 @@ struct Cli {
     timed: bool,
     #[arg(short, long, value_name = "CACHED")]
     cached: bool,
+    #[arg(short, long, value_name = "OPTIMIZE")]
+    optimize: bool,
     input: PathBuf,
 }
 
@@ -48,10 +58,18 @@ fn main() {
 
 fn get_code(config: Cli) -> CompilerOutput {
     if config.cached {
+        let start_time_c = Instant::now();
+
         if config.debug {
             println!("Attempting to use the cached version");
         }
-        return get_bytecode(config);
+        let btc = get_bytecode(config.clone());
+
+        if config.timed {
+            println!("Decoding took: {:?} ", start_time_c.elapsed());
+        }
+
+        return btc;
     }
 
     let raw_path = config.input.clone();
@@ -72,12 +90,40 @@ fn get_code(config: Cli) -> CompilerOutput {
 
     let mut p = Partser::new(content);
 
-    let start_time_c = Instant::now();
+    let start_time_p = Instant::now();
 
-    let ast = p.parse_all().expect("Got error parser lol");
+    let mut ast = p.parse_all().expect("Got error parser lol");
 
     if config.timed {
-        println!("Compilation took: {:?} ", start_time_c.elapsed());
+        println!("Parsing took: {:?} ", start_time_p.elapsed());
+    }
+
+    if config.optimize {
+        let start_time_o = Instant::now();
+
+        let mut optimizer = AstOptimizer::new();
+
+        optimizer.collect_all(&ast);
+
+        let mut pass = 0;
+
+        {
+            let mut changed = true;
+            while changed {
+                pass += 1;
+                let old_ast = ast.clone();
+                optimizer.optimize_all(&mut ast);
+                changed = old_ast != ast;
+            }
+        }
+
+        if config.timed {
+            println!(
+                "Optimization took: {:?} (passes: {})",
+                start_time_o.elapsed(),
+                pass
+            );
+        }
     }
 
     if config.debug {
@@ -92,7 +138,36 @@ fn get_code(config: Cli) -> CompilerOutput {
 
     let mut c = Compiler::new(raw_path.parent().unwrap().to_path_buf());
 
-    let bc = c.compile_all(ast).expect("Got error cmp lol");
+    let start_time_p = Instant::now();
+
+    let mut ir = c.compile_all(ast).expect("Got error cmp lol");
+
+    if config.debug && config.optimize {
+        println!("Compilation took: {:?} ", start_time_p.elapsed());
+    }
+
+    if config.debug {
+        println!("Before optimization {}", ir.len());
+    }
+    if config.optimize {
+        ir = IrOptimizer::optimize(ir);
+    }
+
+    if config.debug && config.optimize {
+        println!("After optimization {}", ir.len());
+    }
+
+    if config.debug {
+        println!("IR output:");
+
+        for node in &ir {
+            println!("{:?}", node);
+        }
+
+        println!();
+    }
+
+    let bc = Emitter {}.emit(ir);
 
     if config.debug {
         println!("Bytecode: {:?}\n", bc);
@@ -159,7 +234,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
 
                 file.read_to_end(&mut buff).unwrap();
 
-                let encoded_c = buff[0..header.consts_offset as usize].to_vec();
+                let encoded_c = &buff[0..header.consts_offset as usize];
 
                 let bytecode = buff[header.consts_offset as usize
                     ..header.consts_offset as usize + header.payload_size as usize]
@@ -185,12 +260,27 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
 
     let mut p = Partser::new(content);
 
-    let ast = p.parse_all().expect("Got error parser lol");
+    let mut ast = p.parse_all().expect("Got error parser lol");
+
+    if config.optimize {
+        let mut optimizer = AstOptimizer::new();
+        optimizer.collect_all(&ast);
+        let mut changed = true;
+        while changed {
+            let old_ast = ast.clone();
+            optimizer.optimize_all(&mut ast);
+            changed = old_ast != ast;
+        }
+    }
 
     let mut c = Compiler::new(source_path.parent().unwrap().to_path_buf());
+    let mut ir = c.compile_all(ast).expect("Got error cmp lol");
 
-    let bc = c.compile_all(ast).expect("Got error cmp lol");
+    if config.optimize {
+        ir = IrOptimizer::optimize(ir);
+    }
 
+    let bc = Emitter {}.emit(ir);
     save_cache(&cache_path, &bc, c.constant_pool.clone(), current_hash);
     return CompilerOutput {
         code: bc,
@@ -204,7 +294,10 @@ struct CompilerOutput {
 }
 
 fn save_cache(path: &Path, raw_bc: &[u8], constant_pool: Vec<Value>, hash: u64) {
-    let encoded_c: Vec<_> = constant_pool.iter().map(|c| c.encode()).flatten().collect();
+    let mut encoded_c = Vec::new();
+    for c in &constant_pool {
+        c.encode(&mut encoded_c);
+    }
 
     let data = raw_bc;
 

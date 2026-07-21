@@ -1,14 +1,15 @@
+use crate::emitter::OpCode;
 use crate::std::StdModule;
 use crate::value::{NativeFunction, Value};
-use std::collections::HashMap;
-
-use crate::compiler::OpCode;
+use rustc_hash::FxHashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone)]
 pub struct Frame {
-    pub registers: [Value; 256],
+    pub pointer: usize,
     pub ip: usize,
-    pub bytecode: Vec<u8>,
+    pub bytecode: Rc<Vec<u8>>,
     pub return_reg: u8,
 }
 
@@ -20,29 +21,36 @@ pub enum Error {
     UnexpectedTypeCall,
     UnexpectedType,
     PropertyNotFound(u64),
+    NativeFunctionFailed(String),
 }
 
 #[derive(Clone)]
 pub struct VM {
+    pub stack: Vec<Value>,
     frames: Vec<Frame>,
     pub constants: Vec<Value>,
     exit_value: Option<Value>,
-    pub patch_table: HashMap<u64, HashMap<u64, Value>>,
+    pub patch_table: FxHashMap<u64, FxHashMap<u64, Value>>,
     pub native_functions: Vec<NativeFunction>,
 }
 
 impl VM {
     pub fn new(code: Vec<u8>, constants: Vec<Value>) -> Self {
+        let mut stack = Vec::with_capacity(8192);
+
+        stack.resize(256, Value::Int(0));
+
         Self {
             frames: vec![Frame {
-                registers: [const { Value::Int(0) }; 256],
+                pointer: 0,
                 ip: 0,
-                bytecode: code,
+                bytecode: Rc::new(code),
                 return_reg: 0,
             }],
+            stack,
             constants,
             exit_value: None,
-            patch_table: HashMap::new(),
+            patch_table: FxHashMap::default(),
             native_functions: StdModule::get_core().functions,
         }
     }
@@ -81,6 +89,8 @@ impl VM {
     }
 
     pub fn run(&mut self) -> Result<Option<Value>, Error> {
+        let mut fp = self.frames.last().unwrap().pointer;
+
         loop {
             //welp, if it's true the we're poping more frames than we push
             if self.frames.is_empty() {
@@ -105,51 +115,56 @@ impl VM {
                         OpCode::ConstInt => {
                             let raw_bytes: [u8; 8] = self.read_n(8)?.try_into().unwrap();
 
-                            self.current()?.registers[dest] =
-                                Value::Int(i64::from_le_bytes(raw_bytes));
+                            self.stack[fp + dest] = Value::Int(i64::from_le_bytes(raw_bytes));
                         }
                         OpCode::ConstDouble => {
                             let raw_bytes: [u8; 8] = self.read_n(8)?.try_into().unwrap();
 
-                            self.current()?.registers[dest] =
-                                Value::Double(f64::from_le_bytes(raw_bytes));
+                            self.stack[fp + dest] = Value::Double(f64::from_le_bytes(raw_bytes));
                         }
                         OpCode::ConstBool => {
-                            self.current()?.registers[dest] = Value::Bool(self.read_byte()? != 0);
+                            self.stack[fp + dest] = Value::Bool(self.read_byte()? != 0);
                         }
-                        OpCode::ConstString
-                        | OpCode::ConstRef
-                        | OpCode::ConstFun
-                        | OpCode::ConstObj
-                        | OpCode::ConstAst
-                        | OpCode::ConstParserValue => {
+                        OpCode::ConstString | OpCode::ConstRef | OpCode::ConstFun => {
                             let byte = self.read_byte()? as usize;
-                            self.current()?.registers[dest] = self.constants[byte].clone();
+                            self.stack[fp + dest] = self.constants[byte].clone();
+                        }
+                        OpCode::ConstObj => {
+                            let byte = self.read_byte()? as usize;
+                            if let Value::Object(ref_cell) = &self.constants[byte] {
+                                let cloned_map = ref_cell.borrow().clone();
+                                self.stack[fp + dest] =
+                                    Value::Object(Rc::new(RefCell::new(cloned_map)));
+                            } else {
+                                return Err(Error::UnexpectedType);
+                            }
                         }
                         OpCode::ConstReg => {
                             let byte = self.read_byte()? as usize;
-                            self.current()?.registers[dest] =
-                                self.current()?.registers[byte].clone();
+                            self.stack[fp + dest] = self.stack[fp + byte].clone();
                         }
                         _ => return Err(Error::UnexpectedTypeLoad(value_type)),
                     }
                 }
                 OpCode::Return => {
                     let src_reg = self.read_byte()? as usize;
+                    let current_fp = self.current()?.pointer;
 
-                    let return_value = self.current()?.registers[src_reg].clone();
+                    let return_value = self.stack[current_fp + src_reg].clone();
 
                     if self.frames.len() <= 1 {
-                        self.exit_value = Some(return_value.clone());
+                        self.exit_value = Some(return_value);
                         self.frames.pop();
                         break;
                     }
 
-                    let frame = self.frames.pop().ok_or(Error::FrameUnderflow)?;
+                    let frame = self.frames.pop().unwrap();
 
-                    if let Some(caller_frame) = self.frames.last_mut() {
-                        caller_frame.registers[frame.return_reg as usize] = return_value;
-                    }
+                    self.stack.truncate(frame.pointer);
+
+                    let caller_fp = self.current()?.pointer;
+                    self.stack[caller_fp + frame.return_reg as usize] = return_value;
+                    fp = self.frames.last().unwrap().pointer;
                 }
                 OpCode::ConstInt
                 | OpCode::ConstDouble
@@ -162,43 +177,52 @@ impl VM {
                 OpCode::Call => {
                     let dest_reg = self.read_byte()?;
                     let fun_reg = self.read_byte()?;
-
                     let arg_count = self.read_byte()?;
 
-                    let func_val = self.current()?.registers[fun_reg as usize].clone();
+                    let current_fp = self.current()?.pointer;
+                    let func_val = self.stack[current_fp + fun_reg as usize].clone();
 
                     match func_val {
                         Value::Fun { arity: _, body } => {
-                            let mut new_frame = Frame {
-                                registers: [const { Value::Int(0) }; 256],
-                                ip: 0,
-                                bytecode: body,
-                                return_reg: dest_reg,
-                            };
+                            let new_fp = self.stack.len();
 
-                            for i in 0..arg_count {
-                                let idx = self.read_byte()? as usize;
-                                new_frame.registers[i as usize] =
-                                    self.current()?.registers[idx].clone();
+                            for _ in 0..arg_count {
+                                let arg_reg_idx = self.read_byte()? as usize;
+                                let arg_val = self.stack[current_fp + arg_reg_idx].clone();
+                                self.stack.push(arg_val);
                             }
 
-                            self.frames.push(new_frame);
+                            let padding = 256 - arg_count as usize;
+                            self.stack.resize(self.stack.len() + padding, Value::Int(0));
+
+                            self.frames.push(Frame {
+                                ip: 0,
+                                pointer: new_fp,
+                                return_reg: dest_reg,
+                                bytecode: Rc::new(body),
+                            });
+                            fp = new_fp;
                         }
                         Value::NativeFun(native_fn) => {
                             let mut args = Vec::new();
+                            let current_fp = self.current()?.pointer;
+
                             for _ in 0..arg_count {
                                 let arg_reg = self.read_byte()? as usize;
-
-                                let arg = self.current()?.registers[arg_reg].clone();
-
+                                let arg = self.stack[current_fp + arg_reg].clone();
                                 args.push(arg);
                             }
 
+                            let current_ip = self.current()?.ip;
+
                             let result = (native_fn.call)(args).map_err(|e| {
-                                panic!("Error in native function: {:?}", e);
+                                Error::NativeFunctionFailed(format!(
+                                    "Error in native function: {}, IP: {}",
+                                    e, current_ip
+                                ))
                             })?;
 
-                            self.current()?.registers[dest_reg as usize] = result;
+                            self.stack[fp + dest_reg as usize] = result;
                         }
                         _ => {
                             return Err(Error::UnexpectedTypeCall);
@@ -209,34 +233,16 @@ impl VM {
                     let offset = self.read_n(2)?.try_into().unwrap();
                     self.current()?.ip = u16::from_le_bytes(offset) as usize;
                 }
-                OpCode::JumpBy => {
-                    let offset = self.read_n(2)?.try_into().unwrap();
-                    self.current()?.ip += u16::from_le_bytes(offset) as usize;
-                }
-                OpCode::JumpIf => {
-                    let jump_condition = self.read_byte()? as usize;
-
-                    let cond_value = self.current()?.registers[jump_condition].clone();
-                    let offset = self.read_n(2)?.try_into().unwrap();
-
-                    if Self::is_truthy(cond_value) {
-                        self.current()?.ip += u16::from_le_bytes(offset) as usize;
-                    }
-                }
                 OpCode::JumpNot => {
                     let jump_condition = self.read_byte()? as usize;
 
-                    let cond_value = self.current()?.registers[jump_condition].clone();
+                    let cond_value = self.stack[fp + jump_condition].clone();
 
                     let offset = self.read_n(2)?.try_into().unwrap();
 
                     if !Self::is_truthy(cond_value) {
-                        self.current()?.ip += u16::from_le_bytes(offset) as usize;
+                        self.current()?.ip = u16::from_le_bytes(offset) as usize;
                     }
-                }
-                OpCode::JumpBack => {
-                    let offset = self.read_n(2)?.try_into().unwrap();
-                    self.current()?.ip -= u16::from_le_bytes(offset) as usize;
                 }
                 OpCode::Binary => {
                     let op = self.read_byte()? as usize;
@@ -246,18 +252,14 @@ impl VM {
                     let left_reg = self.read_byte()? as usize;
                     let right_reg = self.read_byte()? as usize;
 
-                    let current_frame = self.current().unwrap();
+                    let left = self.stack[fp + left_reg].clone();
+                    let right = self.stack[fp + right_reg].clone();
 
-                    let left = current_frame.registers[left_reg].clone();
-                    let right = current_frame.registers[right_reg].clone();
-
-                    current_frame.registers[dest] = Self::binary(op, left, right);
+                    self.stack[fp + dest] = Self::binary(op, left, right);
                 }
                 OpCode::GetProperty => {
                     let dest = self.read_byte()? as usize;
-
                     let src_idx = self.read_byte()? as usize;
-
                     let idx = self.read_byte()? as usize;
 
                     let hash = match self.constants.get(idx) {
@@ -265,15 +267,15 @@ impl VM {
                         _ => panic!("Expected hash constant at index {}", idx),
                     };
 
-                    if let Value::Object(obj_ref) = &self.current()?.registers[src_idx] {
+                    if let Value::Object(obj_ref) = &self.stack[fp + src_idx] {
                         let val = obj_ref.borrow().get(&hash).cloned();
 
                         if let Some(v) = val {
-                            self.current()?.registers[dest] = v;
+                            self.stack[fp + dest] = v;
                         } else if let Some(patched) =
                             self.patch_table.get(&0).and_then(|p| p.get(&hash))
                         {
-                            self.current()?.registers[dest] = patched.clone();
+                            self.stack[fp + dest] = patched.clone();
                         } else {
                             return Err(Error::PropertyNotFound(hash));
                         }
@@ -291,10 +293,48 @@ impl VM {
                         _ => panic!("Expected hash constant"),
                     };
 
-                    let new_val = self.current()?.registers[val_idx].clone();
+                    let new_val = self.stack[fp + val_idx].clone();
 
-                    if let Value::Object(obj_ref) = &self.current()?.registers[obj_idx] {
+                    if let Value::Object(obj_ref) = &self.stack[fp + obj_idx] {
                         obj_ref.borrow_mut().insert(hash, new_val);
+                    }
+                }
+                OpCode::SetPropertyDyn => {
+                    let obj_reg = self.read_byte()? as usize;
+                    let key_reg = self.read_byte()? as usize;
+                    let val_reg = self.read_byte()? as usize;
+
+                    let key_val = &self.stack[fp + key_reg];
+
+                    let runtime_hash = key_val.get_hash();
+
+                    let val = self.stack[fp + val_reg].clone();
+
+                    // 4. Przypisujemy do obiektu
+                    if let Value::Object(rc_map) = &self.stack[fp + obj_reg] {
+                        rc_map.borrow_mut().insert(runtime_hash, val);
+                    } else {
+                        panic!("Attempted to set property on non-object");
+                    }
+                }
+
+                OpCode::GetPropertyDyn => {
+                    let target_reg = self.read_byte()? as usize;
+                    let obj_reg = self.read_byte()? as usize;
+                    let key_reg = self.read_byte()? as usize;
+
+                    let key_val = &self.stack[fp + key_reg];
+                    let runtime_hash = key_val.get_hash();
+
+                    if let Value::Object(rc_map) = &self.stack[fp + obj_reg] {
+                        let value = rc_map
+                            .borrow()
+                            .get(&runtime_hash)
+                            .cloned()
+                            .expect("Missing property from object");
+                        self.stack[fp + target_reg] = value;
+                    } else {
+                        panic!("Runtime Error: Attempted to get property from non-object");
                     }
                 }
                 OpCode::LoadNative => {
@@ -306,17 +346,40 @@ impl VM {
                         _ => panic!("Expected hash constant"),
                     };
 
-                    self.current()?.registers[dest] = Value::NativeFun(
+                    self.stack[fp + dest] = Value::NativeFun(
                         self.native_functions
                             .iter()
                             .find(|f| {
-                                Value::Hash(Value::String(f.name.to_string()).get_hash()) == hash
+                                Value::Hash(Value::String(f.name.to_string().into()).get_hash())
+                                    == hash
                             })
                             .unwrap()
                             .clone(),
                     );
                 }
-                OpCode::ConstAst | OpCode::ConstParserValue => return Err(Error::UnexpectedType),
+                OpCode::LoadGlobal => {
+                    let dest = self.read_byte()? as usize;
+
+                    let global_reg = self.read_byte()? as usize;
+
+                    let global_val = self.stack[global_reg].clone();
+
+                    self.stack[fp + dest] = global_val;
+                }
+                OpCode::Inc => {
+                    let src = self.read_byte()? as usize;
+
+                    let left = self.stack[fp + src].clone();
+
+                    self.stack[fp + src] = Self::binary(0, left, Value::Int(1));
+                }
+                OpCode::Dec => {
+                    let src = self.read_byte()? as usize;
+
+                    let left = self.stack[fp + src].clone();
+
+                    self.stack[fp + src] = Self::binary(1, left, Value::Int(1));
+                }
             }
         }
 
@@ -345,8 +408,14 @@ impl VM {
             4 => Value::Bool(left == right),
             5 => Value::Bool(left > right),
             6 => Value::Bool(left < right),
-            7 => (left % right).expect("Unexpected error"),
-
+            7 => Value::Bool(left >= right),
+            8 => Value::Bool(left <= right),
+            9 => (left % right).expect("Unexpected error"),
+            10 => (left & right).expect("Unexpected error"),
+            11 => (left | right).expect("Unexpected error"),
+            12 => (left ^ right).expect("Unexpected error"),
+            13 => (left << right).expect("Unexpected error"),
+            14 => (left >> right).expect("Unexpected error"),
             _ => panic!("UnexpectedType bin"),
         }
     }
