@@ -381,6 +381,138 @@ impl_bitwise_op!(Shr, shr, >>);
 impl_compare_op!(op_gt, >);
 impl_compare_op!(op_lt, <);
 
+pub trait FromValue: Sized {
+    fn from_value(val: &Value) -> Result<Self, String>;
+}
+
+pub trait IntoValue {
+    fn into_value(self) -> Value;
+}
+
+impl FromValue for i64 {
+    fn from_value(val: &Value) -> Result<i64, String> {
+        match val {
+            Value::Int(i) => Ok(*i),
+            Value::Double(d) => Ok(*d as i64),
+            _ => Err("Expected an integer".into()),
+        }
+    }
+}
+
+impl FromValue for i32 {
+    fn from_value(val: &Value) -> Result<i32, String> {
+        match val {
+            Value::Int(i) => Ok(*i as i32),
+            Value::Double(d) => Ok(*d as i32),
+            _ => Err("Expected an integer".into()),
+        }
+    }
+}
+
+impl FromValue for String {
+    fn from_value(val: &Value) -> Result<String, String> {
+        match val {
+            Value::String(s) | Value::Ref(s) => Ok(s.to_string()),
+            _ => Err("Expected a string".into()),
+        }
+    }
+}
+
+impl<T: FromValue> FromValue for Vec<T> {
+    fn from_value(val: &Value) -> Result<Self, String> {
+        if let Value::Object(obj_ref) = val {
+            let obj = obj_ref.borrow();
+
+            let len = obj.len();
+
+            let mut vec = Vec::with_capacity(len as usize);
+            for i in 0..(len as i64) {
+                let int_key = Value::Int(i).get_hash();
+
+                if let Some(item_val) = obj.get(&int_key) {
+                    vec.push(T::from_value(item_val)?);
+                } else {
+                    return Err(format!("Expected property at key: {}, got none", i).into());
+                }
+            }
+
+            return Ok(vec);
+        }
+        Err("Expected an object".into())
+    }
+}
+
+impl IntoValue for String {
+    fn into_value(self) -> Value {
+        Value::String(self.into())
+    }
+}
+
+impl IntoValue for bool {
+    fn into_value(self) -> Value {
+        Value::Bool(self)
+    }
+}
+
+impl<T: FromValue> FromValue for Option<T> {
+    fn from_value(val: &Value) -> Result<Option<T>, String> {
+        match val {
+            Value::Bool(false) => Ok(None),
+            _ => T::from_value(val).map(Some),
+        }
+    }
+}
+
+impl IntoValue for i64 {
+    fn into_value(self) -> Value {
+        Value::Int(self)
+    }
+}
+
+impl IntoValue for i32 {
+    fn into_value(self) -> Value {
+        Value::Int(self as i64)
+    }
+}
+
+impl IntoValue for f64 {
+    fn into_value(self) -> Value {
+        Value::Double(self)
+    }
+}
+
+impl<T: IntoValue> IntoValue for Option<T> {
+    fn into_value(self) -> Value {
+        match self {
+            Some(val) => val.into_value(),
+            None => Value::Bool(false),
+        }
+    }
+}
+
+impl<T: IntoValue> IntoValue for Vec<T> {
+    fn into_value(self) -> Value {
+        let mut map = FxHashMap::default();
+
+        for (i, item) in self.into_iter().enumerate() {
+            map.insert(Value::Int(i as i64).get_hash(), item.into_value());
+        }
+
+        Value::Object(Rc::new(RefCell::new(map)))
+    }
+}
+
+impl FromValue for bool {
+    fn from_value(val: &Value) -> Result<Self, String> {
+        match val {
+            Value::Bool(b) => Ok(*b),
+            _ => Err("Expected a boolen".into()),
+        }
+    }
+}
+
+pub use parts_macros::{FromPartsObject, IntoPartsObject};
+
 // Native
 
 pub type NativeFn = std::sync::Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>;
