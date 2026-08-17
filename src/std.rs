@@ -392,6 +392,21 @@ pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     return Ok(Value::Int((ch as i64).try_into().unwrap()));
 }
 
+pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunction>>> = std::sync::OnceLock::new();
+
+pub fn register_extra_native(name: &'static str, arity: u8, call: fn(args: Vec<Value>) -> Result<Value, String>) {
+    let native = NativeFunction {
+        name,
+        arity,
+        call: std::sync::Arc::new(call),
+    };
+    EXTRA_NATIVES
+        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock()
+        .unwrap()
+        .push(native);
+}
+
 #[derive(Clone)]
 pub struct StdModule {
     pub functions: Vec<NativeFunction>,
@@ -399,31 +414,37 @@ pub struct StdModule {
 
 impl StdModule {
     pub fn get_core() -> Self {
-        Self {
-            functions: vec![
-                __println(),
-                __print(),
-                __timestamp(),
-                __iter_of(),
-                __get_next(),
-                __has_next(),
-                __rand(),
-                __exec(),
-                __env(),
-                __joinStr(),
-                __math_sin(),
-                __math_cos(),
-                __math_floor(),
-                __math_pow(),
-                __str_len(),
-                __str_strip_prefix(),
-                __str_strip_suffix(),
-                __str_lower(),
-                __str_upper(),
-                __str_byte_at(),
-                __byte_rotate_left(),
-                __object_len(),
-            ],
+        let mut functions = vec![
+            __println(),
+            __print(),
+            __timestamp(),
+            __iter_of(),
+            __get_next(),
+            __has_next(),
+            __rand(),
+            __exec(),
+            __env(),
+            __joinStr(),
+            __math_sin(),
+            __math_cos(),
+            __math_floor(),
+            __math_pow(),
+            __str_len(),
+            __str_strip_prefix(),
+            __str_strip_suffix(),
+            __str_lower(),
+            __str_upper(),
+            __str_byte_at(),
+            __byte_rotate_left(),
+            __object_len(),
+        ];
+
+        if let Some(extra) = EXTRA_NATIVES.get() {
+            if let Ok(guard) = extra.lock() {
+                functions.extend((*guard).clone());
+            }
         }
+
+        Self { functions }
     }
 }

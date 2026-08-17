@@ -383,7 +383,7 @@ impl_compare_op!(op_lt, <);
 
 // Native
 
-pub type NativeFn = Rc<dyn Fn(Vec<Value>) -> Result<Value, String>>;
+pub type NativeFn = std::sync::Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct NativeFunction {

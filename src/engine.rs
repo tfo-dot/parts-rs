@@ -39,7 +39,7 @@ impl Engine {
         self.natives.push(NativeFunction {
             name,
             arity,
-            call: std::rc::Rc::new(call),
+            call: std::sync::Arc::new(call),
         });
     }
 

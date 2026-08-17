@@ -89,7 +89,7 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 name: stringify!(#name),
                 arity: #arity,
                 // Pakujemy wygenerowaną funkcję internal w Rc
-                call: std::rc::Rc::new(#internal_name), 
+                call: std::sync::Arc::new(#internal_name), 
             }
         }
     };
