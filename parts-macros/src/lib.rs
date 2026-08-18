@@ -187,3 +187,67 @@ pub fn derive_from_parts_object(input: TokenStream) -> TokenStream {
 
     expanded.into()
 }
+
+#[proc_macro_attribute]
+pub fn parts_native(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the input as a standard Rust function
+    let input_fn = parse_macro_input!(item as ItemFn);
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let block = &input_fn.block;
+    let ret_type = &input_fn.sig.output;
+
+    let mut arg_extractors = Vec::new();
+    let mut arg_names = Vec::new();
+    let mut arg_types = Vec::new();
+    let arg_count = input_fn.sig.inputs.len();
+
+    // Iterate over the function arguments (e.g., `url: String`)
+    for (i, arg) in input_fn.sig.inputs.iter().enumerate() {
+        if let syn::FnArg::Typed(pat_type) = arg {
+            let pat = &pat_type.pat; // The variable name
+            let ty = &pat_type.ty;   // The variable type
+            
+            arg_names.push(pat.clone());
+            arg_types.push(ty.clone());
+            
+            // Generate the FromValue extraction logic for this specific argument
+            arg_extractors.push(quote! {
+                let #pat = <#ty as ::parts::value::FromValue>::from_value(
+                    args.get(#i).ok_or_else(|| ::std::format!("Missing argument at index {}", #i))?
+                )?;
+            });
+        } else {
+            panic!("self methods are not supported for native functions");
+        }
+    }
+
+    // Generate the final wrapper function
+    let expanded = quote! {
+        #fn_vis fn #fn_name(args: ::std::vec::Vec<::parts::value::Value>) -> ::std::result::Result<::parts::value::Value, ::std::string::String> {
+            // 1. Validate argument count
+            if args.len() < #arg_count {
+                return ::std::result::Result::Err(::std::format!(
+                    "{} requires {} arguments, but got {}",
+                    ::std::stringify!(#fn_name),
+                    #arg_count,
+                    args.len()
+                ));
+            }
+
+            // 2. Extract arguments into native Rust types
+            #(#arg_extractors)*
+
+            // 3. Define the original logic as an inner function to preserve type inference
+            fn inner(#(#arg_names: #arg_types),*) #ret_type {
+                #block
+            }
+
+            // 4. Execute the logic and pack the result into a parts Value
+            let result = inner(#(#arg_names),*)?;
+            ::std::result::Result::Ok(::parts::value::IntoValue::into_value(result))
+        }
+    };
+
+    expanded.into()
+}

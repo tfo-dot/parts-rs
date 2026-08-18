@@ -511,7 +511,39 @@ impl FromValue for bool {
     }
 }
 
-pub use parts_macros::{FromPartsObject, IntoPartsObject};
+impl FromValue for u32 {
+    fn from_value(val: &Value) -> Result<Self, String> {
+        match val {
+            Value::Int(i) => Ok(*i as u32),
+            Value::Double(d) => Ok(*d as u32),
+            _ => Err("Expected an integer".into()),
+        }
+    }
+}
+
+impl FromValue for u8 {
+    fn from_value(val: &Value) -> Result<Self, String> {
+        match val {
+            Value::Int(i) => Ok(*i as u8),
+            Value::Double(d) => Ok(*d as u8),
+            _ => Err("Expected an integer".into()),
+        }
+    }
+}
+
+impl FromValue for Value {
+    fn from_value(val: &Value) -> Result<Self, String> {
+        Ok(val.clone())
+    }
+}
+
+impl IntoValue for Value {
+    fn into_value(self) -> Value {
+        self
+    }
+}
+
+pub use parts_macros::{FromPartsObject, IntoPartsObject, parts_native};
 
 // Native
 
