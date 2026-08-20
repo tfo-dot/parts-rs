@@ -388,7 +388,16 @@ let connect_ws(host, port, path) {
     }
     let sock = sock_res.unwrap();
     let key = "dGhlIHNhbXBsZSBub25jZQ==";
-    let req = create_client_handshake(host, path, key);
+    let req = __joinStr(
+        __joinStr(
+            __joinStr(
+                __joinStr("GET ", path),
+                __joinStr(" HTTP/1.1\r\nHost: ", host)
+            ),
+            __joinStr("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ", key)
+        ),
+        "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
     let write_res = __net_write(sock, req);
     if write_res.is_err() {
         __net_close(sock);
@@ -401,10 +410,10 @@ let connect_ws(host, port, path) {
     }
     let resp_bytes = read_res.unwrap();
     let resp_str = resp_bytes.to_string().unwrap();
-    let verify_res = verify_server_handshake(resp_str, key);
-    if verify_res.is_err() {
+    let prefix_match = __str_strip_prefix(resp_str, "HTTP/1.1 101").is_some();
+    if (prefix_match == false) {
         __net_close(sock);
-        return Result::Err(verify_res.unwrap_err());
+        return Result::Err("Server handshake failed: expected HTTP 101 Switching Protocols");
     }
 
     return Result::Ok(|>
@@ -519,11 +528,11 @@ let client_recv(client) {
 
     let mask_key_buf = __bytes_new(0).unwrap();
     if masked {
-        mask_key_buf = bytes.slice(current_offset, 4).unwrap();
+        mask_key_buf = bytes.slice(current_offset, current_offset + 4).unwrap();
         current_offset = current_offset + 4;
     }
 
-    let raw_payload = bytes.slice(current_offset, payload_len).unwrap();
+    let raw_payload = bytes.slice(current_offset, current_offset + payload_len).unwrap();
     let final_payload = raw_payload;
     if masked {
         let unmasked = __bytes_new(payload_len).unwrap();
@@ -536,19 +545,20 @@ let client_recv(client) {
         final_payload = unmasked;
     }
 
+    let ret_frame = |>
+        fin: fin,
+        opcode: opcode,
+        payload: final_payload,
+        masked: masked,
+        mask_key: mask_key_buf
+    <|;
+
     return Result::Ok(|>
-        frame: |>
-            fin: fin,
-            opcode: opcode,
-            payload: final_payload,
-            masked: masked,
-            mask_key: mask_key_buf
-        <|,
+        frame: ret_frame,
         next_offset: current_offset + payload_len,
         bytes_consumed: current_offset + payload_len
     <|);
 }
-
 let client_close(client) {
     return __net_close(client.socket);
 }
