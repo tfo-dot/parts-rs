@@ -196,13 +196,13 @@ mod tests {
             let std = import `@std/std.pts`;
             let text = \"0x1234abcd\";
             
-            let opt_prefix = std.str.strip_prefix(text, \"0x\");
-            let opt_no_match = std.str.strip_prefix(text, \"zzz\");
+            let opt_prefix = text.strip_prefix(\"0x\");
+            let opt_no_match = text.strip_prefix(\"zzz\");
 
             let stripped = opt_prefix.unwrap_or(text);
             let is_none_match = opt_no_match.is_none();
 
-            let opt_suffix = std.str.strip_suffix(text, \"abcd\");
+            let opt_suffix = text.strip_suffix(\"abcd\");
             let stripped_suffix = opt_suffix.unwrap_or(text);
 
             if (stripped == \"1234abcd\") & is_none_match & (stripped_suffix == \"0x1234\") {
@@ -222,7 +222,7 @@ mod tests {
             let std = import `@std/std.pts`;
 
             let parse_int_hex(str_val) {
-                let stripped_opt = std.str.strip_prefix(str_val, \"0x\");
+                let stripped_opt = str_val.strip_prefix(\"0x\");
                 let clean_str = match stripped_opt {
                     Some(s) => s,
                     None => str_val

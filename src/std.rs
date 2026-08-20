@@ -1,11 +1,27 @@
 use rustc_hash::FxHashMap;
 use std::{
     cell::RefCell,
+    io::{Read, Write},
+    net::TcpStream,
     process::Command,
     rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+enum SocketStream {
+    Tcp(TcpStream),
+    Tls(native_tls::TlsStream<TcpStream>),
+}
+
+static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
+static SOCKETS: std::sync::LazyLock<Mutex<FxHashMap<u64, SocketStream>>> =
+    std::sync::LazyLock::new(|| Mutex::new(FxHashMap::default()));
+
+fn get_sockets() -> &'static Mutex<FxHashMap<u64, SocketStream>> {
+    &SOCKETS
+}
 use crate::value::{NativeFunction, Value};
 use parts_macros::native_function;
 
@@ -299,8 +315,7 @@ pub fn __str_len(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
+fn raw_str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
     let s1 = match str {
         Value::String(s) => s,
         _ => return Ok(Value::none()),
@@ -321,7 +336,16 @@ pub fn __str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
 }
 
 #[native_function]
-pub fn __str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
+pub fn __str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
+    raw_str_strip_prefix(str, prefix)
+}
+
+#[native_function]
+pub fn strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
+    raw_str_strip_prefix(str, prefix)
+}
+
+fn raw_str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
     let s1 = match str {
         Value::String(s) => s,
         _ => return Ok(Value::none()),
@@ -340,6 +364,17 @@ pub fn __str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
         Ok(Value::none())
     }
 }
+
+#[native_function]
+pub fn __str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
+    raw_str_strip_suffix(str, suffix)
+}
+
+#[native_function]
+pub fn strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
+    raw_str_strip_suffix(str, suffix)
+}
+
 
 #[native_function]
 pub fn __str_upper(val: Value) -> Result<Value, String> {
@@ -385,13 +420,26 @@ pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Valu
     return Ok(Value::Int(x));
 }
 
+fn raw_object_len(obj: Value) -> Result<Value, String> {
+    if let Value::Object(obj_ref) = &obj {
+        Ok(Value::Int(obj_ref.borrow().len() as i64))
+    } else if let Value::Bytes(bytes_ref) = &obj {
+        Ok(Value::Int(bytes_ref.borrow().len() as i64))
+    } else if let Value::String(s) = &obj {
+        Ok(Value::Int(s.len() as i64))
+    } else {
+        Err("UnexpectedType, expected object, bytes or string".to_string())
+    }
+}
+
 #[native_function]
 pub fn __object_len(obj: Value) -> Result<Value, String> {
-    if let Value::Object(obj_ref) = obj {
-        Ok(Value::Int(obj_ref.take().len() as i64))
-    } else {
-        Err("UnexpectedType, expected object".to_string())
-    }
+    raw_object_len(obj)
+}
+
+#[native_function]
+pub fn len(obj: Value) -> Result<Value, String> {
+    raw_object_len(obj)
 }
 
 #[native_function]
@@ -686,6 +734,1007 @@ pub fn __option_none() -> Result<Value, String> {
 pub fn none() -> Result<Value, String> {
     Ok(Value::none())
 }
+fn raw_bytes_new(size: Value) -> Result<Value, String> {
+    let s = match size {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer for bytes length")),
+    };
+    Ok(Value::ok(Value::bytes(vec![0u8; s])))
+}
+
+fn raw_bytes_from_string(str_val: Value) -> Result<Value, String> {
+    match str_val {
+        Value::String(s) => Ok(Value::bytes(s.as_bytes().to_vec())),
+        _ => Ok(Value::err("Expected string for bytes_from_string")),
+    }
+}
+
+fn raw_bytes_from_array(arr: Value) -> Result<Value, String> {
+    match arr {
+        Value::Object(map_ref) => {
+            let map = map_ref.borrow();
+            let mut vec = Vec::with_capacity(map.len());
+            for i in 0..(map.len() as i64) {
+                let key = Value::Int(i).get_hash();
+                if let Some(val) = map.get(&key) {
+                    if let Value::Int(b) = val {
+                        vec.push((b & 0xFF) as u8);
+                    } else {
+                        vec.push(0);
+                    }
+                }
+            }
+            Ok(Value::bytes(vec))
+        }
+        Value::Bytes(b_ref) => Ok(Value::bytes(b_ref.borrow().clone())),
+        _ => Ok(Value::err("Expected object array or bytes")),
+    }
+}
+
+fn raw_bytes_from_hex(hex_val: Value) -> Result<Value, String> {
+    let s = match hex_val {
+        Value::String(s) => s,
+        _ => return Ok(Value::err("Expected string for bytes_from_hex")),
+    };
+    let clean = s.trim_start_matches("0x").trim_start_matches("0X");
+    if clean.len() % 2 != 0 {
+        return Ok(Value::err("Hex string must have even length"));
+    }
+    let mut bytes = Vec::with_capacity(clean.len() / 2);
+    for chunk in clean.as_bytes().chunks(2) {
+        let chunk_str = match std::str::from_utf8(chunk) {
+            Ok(c) => c,
+            Err(_) => return Ok(Value::err("Invalid UTF-8 in hex string")),
+        };
+        match u8::from_str_radix(chunk_str, 16) {
+            Ok(b) => bytes.push(b),
+            Err(e) => return Ok(Value::err(format!("Invalid hex character: {}", e))),
+        }
+    }
+    Ok(Value::ok(Value::bytes(bytes)))
+}
+
+fn raw_bytes_len(buf: Value) -> Result<Value, String> {
+    match buf {
+        Value::Bytes(b) => Ok(Value::Int(b.borrow().len() as i64)),
+        _ => Err("Expected Bytes for bytes_len".to_string()),
+    }
+}
+
+fn raw_bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
+    let index = match idx {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer index for bytes_get")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if index < slice.len() {
+                Ok(Value::ok(Value::Int(slice[index] as i64)))
+            } else {
+                Ok(Value::err("Index out of bounds"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
+    let index = match idx {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer index for bytes_set")),
+    };
+    let byte_val = match val {
+        Value::Int(i) => (i & 0xFF) as u8,
+        _ => return Ok(Value::err("Expected integer byte value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if index < slice.len() {
+                slice[index] = byte_val;
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Index out of bounds"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_push(buf: Value, val: Value) -> Result<Value, String> {
+    let byte_val = match val {
+        Value::Int(i) => (i & 0xFF) as u8,
+        _ => return Err("Expected integer byte for bytes_push".to_string()),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().push(byte_val);
+            Ok(Value::Bool(true))
+        }
+        _ => Err("Expected Bytes for bytes_push".to_string()),
+    }
+}
+
+fn raw_bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
+    match (&buf, &other) {
+        (Value::Bytes(b1), Value::Bytes(b2)) => {
+            let other_slice = b2.borrow().clone();
+            b1.borrow_mut().extend_from_slice(&other_slice);
+            Ok(Value::Bool(true))
+        }
+        (Value::Bytes(b1), Value::String(s)) => {
+            b1.borrow_mut().extend_from_slice(s.as_bytes());
+            Ok(Value::Bool(true))
+        }
+        _ => Err("Expected Bytes and Bytes/String for bytes_extend".to_string()),
+    }
+}
+
+fn raw_bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
+    let s_idx = match start {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer for slice start")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            let e_idx = match end {
+                Value::Int(i) if i >= 0 => std::cmp::min(i as usize, slice.len()),
+                _ => slice.len(),
+            };
+            if s_idx <= e_idx && s_idx <= slice.len() {
+                Ok(Value::ok(Value::bytes(slice[s_idx..e_idx].to_vec())))
+            } else {
+                Ok(Value::err("Invalid slice range"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes for bytes_slice")),
+    }
+}
+
+fn raw_bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
+    let len = match new_len {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Err("Expected non-negative integer for new length".to_string()),
+    };
+    let fill_byte = match fill {
+        Value::Int(i) => (i & 0xFF) as u8,
+        _ => 0u8,
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().resize(len, fill_byte);
+            Ok(Value::Bool(true))
+        }
+        _ => Err("Expected Bytes for bytes_resize".to_string()),
+    }
+}
+
+fn raw_bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
+    let b_val = match byte_val {
+        Value::Int(i) => (i & 0xFF) as u8,
+        _ => return Err("Expected integer byte for bytes_fill".to_string()),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().fill(b_val);
+            Ok(Value::Bool(true))
+        }
+        _ => Err("Expected Bytes for bytes_fill".to_string()),
+    }
+}
+
+fn raw_bytes_to_string(buf: Value) -> Result<Value, String> {
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            match std::str::from_utf8(&slice) {
+                Ok(s) => Ok(Value::ok(Value::String(s.to_string().into()))),
+                Err(e) => Ok(Value::err(format!("Invalid UTF-8: {}", e))),
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes for bytes_to_string")),
+    }
+}
+
+fn raw_bytes_to_hex(buf: Value) -> Result<Value, String> {
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            let mut hex_str = String::with_capacity(slice.len() * 2);
+            for byte in slice.iter() {
+                use std::fmt::Write;
+                let _ = write!(hex_str, "{:02x}", byte);
+            }
+            Ok(Value::String(hex_str.into()))
+        }
+        _ => Err("Expected Bytes for bytes_to_hex".to_string()),
+    }
+}
+
+fn raw_bytes_get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 2 <= slice.len() {
+                let num = u16::from_be_bytes([slice[off], slice[off + 1]]);
+                Ok(Value::ok(Value::Int(num as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u16_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 2 <= slice.len() {
+                let num = u16::from_le_bytes([slice[off], slice[off + 1]]);
+                Ok(Value::ok(Value::Int(num as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u16_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u16,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 2 <= slice.len() {
+                let bytes = num.to_be_bytes();
+                slice[off..off + 2].copy_from_slice(&bytes);
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u16_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u16,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 2 <= slice.len() {
+                let bytes = num.to_le_bytes();
+                slice[off..off + 2].copy_from_slice(&bytes);
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u16_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 4 <= slice.len() {
+                let bytes: [u8; 4] = slice[off..off + 4].try_into().unwrap();
+                Ok(Value::ok(Value::Int(u32::from_be_bytes(bytes) as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u32_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 4 <= slice.len() {
+                let bytes: [u8; 4] = slice[off..off + 4].try_into().unwrap();
+                Ok(Value::ok(Value::Int(u32::from_le_bytes(bytes) as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u32_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u32,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 4 <= slice.len() {
+                slice[off..off + 4].copy_from_slice(&num.to_be_bytes());
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u32_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u32,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 4 <= slice.len() {
+                slice[off..off + 4].copy_from_slice(&num.to_le_bytes());
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u32_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 8 <= slice.len() {
+                let bytes: [u8; 8] = slice[off..off + 8].try_into().unwrap();
+                Ok(Value::ok(Value::Int(u64::from_be_bytes(bytes) as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u64_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let slice = b.borrow();
+            if off + 8 <= slice.len() {
+                let bytes: [u8; 8] = slice[off..off + 8].try_into().unwrap();
+                Ok(Value::ok(Value::Int(u64::from_le_bytes(bytes) as i64)))
+            } else {
+                Ok(Value::err("Offset out of bounds for get_u64_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u64,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 8 <= slice.len() {
+                slice[off..off + 8].copy_from_slice(&num.to_be_bytes());
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u64_be"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+fn raw_bytes_set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    let off = match offset {
+        Value::Int(i) if i >= 0 => i as usize,
+        _ => return Ok(Value::err("Expected non-negative integer offset")),
+    };
+    let num = match val {
+        Value::Int(i) => i as u64,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            let mut slice = b.borrow_mut();
+            if off + 8 <= slice.len() {
+                slice[off..off + 8].copy_from_slice(&num.to_le_bytes());
+                Ok(Value::ok(Value::Bool(true)))
+            } else {
+                Ok(Value::err("Offset out of bounds for set_u64_le"))
+            }
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
+}
+
+#[native_function]
+pub fn __bytes_new(size: Value) -> Result<Value, String> {
+    raw_bytes_new(size)
+}
+
+#[native_function]
+pub fn bytes_new(size: Value) -> Result<Value, String> {
+    raw_bytes_new(size)
+}
+
+#[native_function]
+pub fn bytes(size: Value) -> Result<Value, String> {
+    raw_bytes_new(size)
+}
+
+#[native_function]
+pub fn __bytes_from_string(str_val: Value) -> Result<Value, String> {
+    raw_bytes_from_string(str_val)
+}
+
+#[native_function]
+pub fn bytes_from_string(str_val: Value) -> Result<Value, String> {
+    raw_bytes_from_string(str_val)
+}
+
+#[native_function]
+pub fn __bytes_from_array(arr: Value) -> Result<Value, String> {
+    raw_bytes_from_array(arr)
+}
+
+#[native_function]
+pub fn bytes_from_array(arr: Value) -> Result<Value, String> {
+    raw_bytes_from_array(arr)
+}
+
+#[native_function]
+pub fn __bytes_from_hex(hex_val: Value) -> Result<Value, String> {
+    raw_bytes_from_hex(hex_val)
+}
+
+#[native_function]
+pub fn bytes_from_hex(hex_val: Value) -> Result<Value, String> {
+    raw_bytes_from_hex(hex_val)
+}
+
+#[native_function]
+pub fn __bytes_len(buf: Value) -> Result<Value, String> {
+    raw_bytes_len(buf)
+}
+
+#[native_function]
+pub fn bytes_len(buf: Value) -> Result<Value, String> {
+    raw_bytes_len(buf)
+}
+
+#[native_function]
+pub fn __bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
+    raw_bytes_get(buf, idx)
+}
+
+#[native_function]
+pub fn bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
+    raw_bytes_get(buf, idx)
+}
+
+#[native_function]
+pub fn __bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set(buf, idx, val)
+}
+
+#[native_function]
+pub fn bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set(buf, idx, val)
+}
+
+#[native_function]
+pub fn __bytes_push(buf: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_push(buf, val)
+}
+
+#[native_function]
+pub fn bytes_push(buf: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_push(buf, val)
+}
+
+#[native_function]
+pub fn __bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
+    raw_bytes_extend(buf, other)
+}
+
+#[native_function]
+pub fn bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
+    raw_bytes_extend(buf, other)
+}
+
+#[native_function]
+pub fn __bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
+    raw_bytes_slice(buf, start, end)
+}
+
+#[native_function]
+pub fn bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
+    raw_bytes_slice(buf, start, end)
+}
+
+#[native_function]
+pub fn __bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
+    raw_bytes_resize(buf, new_len, fill)
+}
+
+#[native_function]
+pub fn bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
+    raw_bytes_resize(buf, new_len, fill)
+}
+
+#[native_function]
+pub fn __bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
+    raw_bytes_fill(buf, byte_val)
+}
+
+#[native_function]
+pub fn bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
+    raw_bytes_fill(buf, byte_val)
+}
+
+#[native_function]
+pub fn __bytes_to_string(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_string(buf)
+}
+
+#[native_function]
+pub fn bytes_to_string(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_string(buf)
+}
+
+#[native_function]
+pub fn __bytes_to_hex(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_hex(buf)
+}
+
+#[native_function]
+pub fn bytes_to_hex(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_hex(buf)
+}
+
+#[native_function]
+pub fn __bytes_get_u8(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get(buf, offset)
+}
+#[native_function]
+pub fn get_u8(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_set_u8(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set(buf, offset, val)
+}
+#[native_function]
+pub fn set_u8(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u16_be(buf, offset)
+}
+#[native_function]
+pub fn get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u16_be(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u16_le(buf, offset)
+}
+#[native_function]
+pub fn get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u16_le(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u16_be(buf, offset, val)
+}
+#[native_function]
+pub fn set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u16_be(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u16_le(buf, offset, val)
+}
+#[native_function]
+pub fn set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u16_le(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u32_be(buf, offset)
+}
+#[native_function]
+pub fn get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u32_be(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u32_le(buf, offset)
+}
+#[native_function]
+pub fn get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u32_le(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u32_be(buf, offset, val)
+}
+#[native_function]
+pub fn set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u32_be(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u32_le(buf, offset, val)
+}
+#[native_function]
+pub fn set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u32_le(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u64_be(buf, offset)
+}
+#[native_function]
+pub fn get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u64_be(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u64_le(buf, offset)
+}
+#[native_function]
+pub fn get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
+    raw_bytes_get_u64_le(buf, offset)
+}
+
+#[native_function]
+pub fn __bytes_set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u64_be(buf, offset, val)
+}
+#[native_function]
+pub fn set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u64_be(buf, offset, val)
+}
+
+#[native_function]
+pub fn __bytes_set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u64_le(buf, offset, val)
+}
+#[native_function]
+pub fn set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set_u64_le(buf, offset, val)
+}
+#[native_function]
+pub fn to_string(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_string(buf)
+}
+
+#[native_function]
+pub fn to_hex(buf: Value) -> Result<Value, String> {
+    raw_bytes_to_hex(buf)
+}
+
+#[native_function]
+pub fn slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
+    raw_bytes_slice(buf, start, end)
+}
+
+#[native_function]
+pub fn push(buf: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_push(buf, val)
+}
+
+#[native_function]
+pub fn extend(buf: Value, other: Value) -> Result<Value, String> {
+    raw_bytes_extend(buf, other)
+}
+
+#[native_function]
+pub fn fill(buf: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_fill(buf, val)
+}
+
+#[native_function]
+pub fn resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
+    raw_bytes_resize(buf, new_len, fill)
+}
+
+#[native_function]
+pub fn get(buf: Value, idx: Value) -> Result<Value, String> {
+    raw_bytes_get(buf, idx)
+}
+
+#[native_function]
+pub fn set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
+    raw_bytes_set(buf, idx, val)
+}
+fn compute_sha1(data: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let len_bits = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0x00);
+    }
+    msg.extend_from_slice(&len_bits.to_be_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            let bytes: [u8; 4] = chunk[i * 4..(i + 1) * 4].try_into().unwrap();
+            w[i] = u32::from_be_bytes(bytes);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    out[0..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
+}
+
+const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode_base64(data: &[u8]) -> String {
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+
+        let i0 = (b0 >> 2) as usize;
+        let i1 = (((b0 & 0x03) << 4) | (b1 >> 4)) as usize;
+        let i2 = (((b1 & 0x0F) << 2) | (b2 >> 6)) as usize;
+        let i3 = (b2 & 0x3F) as usize;
+
+        result.push(BASE64_CHARS[i0] as char);
+        result.push(BASE64_CHARS[i1] as char);
+        if chunk.len() > 1 {
+            result.push(BASE64_CHARS[i2] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(BASE64_CHARS[i3] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
+    let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err("Invalid Base64 length".to_string());
+    }
+    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
+    for chunk in clean.chunks(4) {
+        let mut indices = [0u8; 4];
+        let mut pad_count = 0;
+        for i in 0..4 {
+            let b = chunk[i];
+            if b == b'=' {
+                pad_count += 1;
+                indices[i] = 0;
+            } else if let Some(idx) = BASE64_CHARS.iter().position(|&c| c == b) {
+                indices[i] = idx as u8;
+            } else {
+                return Err(format!("Invalid Base64 character: {}", b as char));
+            }
+        }
+        let b0 = (indices[0] << 2) | (indices[1] >> 4);
+        let b1 = ((indices[1] & 0x0F) << 4) | (indices[2] >> 2);
+        let b2 = ((indices[2] & 0x03) << 6) | indices[3];
+
+        out.push(b0);
+        if pad_count < 2 {
+            out.push(b1);
+        }
+        if pad_count < 1 {
+            out.push(b2);
+        }
+    }
+    Ok(out)
+}
+
+fn raw_sha1(val: Value) -> Result<Value, String> {
+    let bytes = match &val {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.borrow().clone(),
+        _ => return Ok(Value::err("Expected String or Bytes for sha1")),
+    };
+    let hash = compute_sha1(&bytes);
+    Ok(Value::ok(Value::bytes(hash.to_vec())))
+}
+
+#[native_function]
+pub fn __sha1(val: Value) -> Result<Value, String> {
+    raw_sha1(val)
+}
+
+#[native_function]
+pub fn sha1(val: Value) -> Result<Value, String> {
+    raw_sha1(val)
+}
+
+fn raw_base64_encode(val: Value) -> Result<Value, String> {
+    let bytes = match &val {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.borrow().clone(),
+        _ => return Ok(Value::err("Expected String or Bytes for base64_encode")),
+    };
+    Ok(Value::String(encode_base64(&bytes).into()))
+}
+
+#[native_function]
+pub fn __base64_encode(val: Value) -> Result<Value, String> {
+    raw_base64_encode(val)
+}
+
+#[native_function]
+pub fn base64_encode(val: Value) -> Result<Value, String> {
+    raw_base64_encode(val)
+}
+
+fn raw_base64_decode(val: Value) -> Result<Value, String> {
+    let s = match val {
+        Value::String(s) => s,
+        _ => return Ok(Value::err("Expected String for base64_decode")),
+    };
+    match decode_base64(&s) {
+        Ok(bytes) => Ok(Value::ok(Value::bytes(bytes))),
+        Err(e) => Ok(Value::err(Value::String(e.into()))),
+    }
+}
+
+#[native_function]
+pub fn __base64_decode(val: Value) -> Result<Value, String> {
+    raw_base64_decode(val)
+}
+
+#[native_function]
+pub fn base64_decode(val: Value) -> Result<Value, String> {
+    raw_base64_decode(val)
+}
+
+fn raw_sec_websocket_accept(key: Value) -> Result<Value, String> {
+    let k = match key {
+        Value::String(s) => s,
+        _ => return Ok(Value::err("Expected String for sec_websocket_accept key")),
+    };
+    let combined = format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", k);
+    let hash = compute_sha1(combined.as_bytes());
+    Ok(Value::String(encode_base64(&hash).into()))
+}
+
+#[native_function]
+pub fn __sec_websocket_accept(key: Value) -> Result<Value, String> {
+    raw_sec_websocket_accept(key)
+}
+
+#[native_function]
+pub fn sec_websocket_accept(key: Value) -> Result<Value, String> {
+    raw_sec_websocket_accept(key)
+}
+
+
 pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunction>>> = std::sync::OnceLock::new();
 
 pub fn register_extra_native(name: &'static str, arity: u8, call: fn(args: Vec<Value>) -> Result<Value, String>) {
@@ -699,6 +1748,186 @@ pub fn register_extra_native(name: &'static str, arity: u8, call: fn(args: Vec<V
         .lock()
         .unwrap()
         .push(native);
+}
+
+fn raw_net_tcp_connect(addr: Value) -> Result<Value, String> {
+    let addr_str = match addr {
+        Value::String(s) => s.to_string(),
+        _ => return Ok(Value::err("Expected string address for tcp_connect")),
+    };
+
+    match TcpStream::connect(&addr_str) {
+        Ok(stream) => {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+            let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+            get_sockets().lock().unwrap().insert(id, SocketStream::Tcp(stream));
+            Ok(Value::ok(Value::Int(id as i64)))
+        }
+        Err(e) => Ok(Value::err(Value::String(format!("Failed to connect to {}: {}", addr_str, e).into()))),
+    }
+}
+
+#[native_function]
+pub fn __net_tcp_connect(addr: Value) -> Result<Value, String> {
+    raw_net_tcp_connect(addr)
+}
+
+#[native_function]
+pub fn tcp_connect(addr: Value) -> Result<Value, String> {
+    raw_net_tcp_connect(addr)
+}
+
+fn raw_net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
+    let host_str = match host {
+        Value::String(s) => s.to_string(),
+        _ => return Ok(Value::err("Expected string host for tls_connect")),
+    };
+    let port_num = match port {
+        Value::Int(i) => i as u16,
+        _ => 443u16,
+    };
+
+    let addr = format!("{}:{}", host_str, port_num);
+    let tcp_stream = match TcpStream::connect(&addr) {
+        Ok(s) => s,
+        Err(e) => return Ok(Value::err(Value::String(format!("TCP connection to {} failed: {}", addr, e).into()))),
+    };
+
+    let _ = tcp_stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = tcp_stream.set_write_timeout(Some(Duration::from_secs(10)));
+
+    let connector = match native_tls::TlsConnector::new() {
+        Ok(c) => c,
+        Err(e) => return Ok(Value::err(Value::String(format!("Failed to initialize TLS connector: {}", e).into()))),
+    };
+
+    match connector.connect(&host_str, tcp_stream) {
+        Ok(tls_stream) => {
+            let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+            get_sockets().lock().unwrap().insert(id, SocketStream::Tls(tls_stream));
+            Ok(Value::ok(Value::Int(id as i64)))
+        }
+        Err(e) => Ok(Value::err(Value::String(format!("TLS handshake with {} failed: {}", host_str, e).into()))),
+    }
+}
+
+#[native_function]
+pub fn __net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
+    raw_net_tls_connect(host, port)
+}
+
+#[native_function]
+pub fn tls_connect(host: Value, port: Value) -> Result<Value, String> {
+    raw_net_tls_connect(host, port)
+}
+
+fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
+    let id = match socket_id {
+        Value::Int(i) if i > 0 => i as u64,
+        _ => return Ok(Value::err("Expected integer socket id for net_read")),
+    };
+    let len = match max_len {
+        Value::Int(i) if i > 0 => i as usize,
+        _ => 4096usize,
+    };
+
+    let mut sockets = get_sockets().lock().unwrap();
+    let stream = match sockets.get_mut(&id) {
+        Some(s) => s,
+        None => return Ok(Value::err("Socket not found or already closed")),
+    };
+
+    let mut buf = vec![0u8; len];
+    let read_res = match stream {
+        SocketStream::Tcp(s) => s.read(&mut buf),
+        SocketStream::Tls(s) => s.read(&mut buf),
+    };
+
+    match read_res {
+        Ok(n) => {
+            buf.truncate(n);
+            Ok(Value::ok(Value::bytes(buf)))
+        }
+        Err(e) => Ok(Value::err(Value::String(format!("Read error: {}", e).into()))),
+    }
+}
+
+#[native_function]
+pub fn __net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
+    raw_net_read(socket_id, max_len)
+}
+
+#[native_function]
+pub fn net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
+    raw_net_read(socket_id, max_len)
+}
+
+fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+    let id = match socket_id {
+        Value::Int(i) if i > 0 => i as u64,
+        _ => return Ok(Value::err("Expected integer socket id for net_write")),
+    };
+
+    let bytes = match &data {
+        Value::Bytes(b) => b.borrow().clone(),
+        Value::String(s) => s.as_bytes().to_vec(),
+        _ => return Ok(Value::err("Expected Bytes or String data for net_write")),
+    };
+
+    let mut sockets = get_sockets().lock().unwrap();
+    let stream = match sockets.get_mut(&id) {
+        Some(s) => s,
+        None => return Ok(Value::err("Socket not found or already closed")),
+    };
+
+    let write_res = match stream {
+        SocketStream::Tcp(s) => s.write_all(&bytes).and_then(|_| s.flush()),
+        SocketStream::Tls(s) => s.write_all(&bytes).and_then(|_| s.flush()),
+    };
+
+    match write_res {
+        Ok(()) => Ok(Value::ok(Value::Int(bytes.len() as i64))),
+        Err(e) => Ok(Value::err(Value::String(format!("Write error: {}", e).into()))),
+    }
+}
+
+#[native_function]
+pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+    raw_net_write(socket_id, data)
+}
+
+#[native_function]
+pub fn net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+    raw_net_write(socket_id, data)
+}
+
+fn raw_net_close(socket_id: Value) -> Result<Value, String> {
+    let id = match socket_id {
+        Value::Int(i) if i > 0 => i as u64,
+        _ => return Ok(Value::err("Expected integer socket id for net_close")),
+    };
+
+    let mut sockets = get_sockets().lock().unwrap();
+    if let Some(stream) = sockets.remove(&id) {
+        match stream {
+            SocketStream::Tcp(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }
+            SocketStream::Tls(mut s) => { let _ = s.shutdown(); }
+        }
+        Ok(Value::ok(Value::Bool(true)))
+    } else {
+        Ok(Value::ok(Value::Bool(false)))
+    }
+}
+
+#[native_function]
+pub fn __net_close(socket_id: Value) -> Result<Value, String> {
+    raw_net_close(socket_id)
+}
+
+#[native_function]
+pub fn net_close(socket_id: Value) -> Result<Value, String> {
+    raw_net_close(socket_id)
 }
 
 #[derive(Clone)]
@@ -726,6 +1955,8 @@ impl StdModule {
             __str_len(),
             __str_strip_prefix(),
             __str_strip_suffix(),
+            strip_prefix(),
+            strip_suffix(),
             __str_lower(),
             __str_upper(),
             __str_byte_at(),
@@ -744,6 +1975,34 @@ impl StdModule {
             __result_err(),
             __option_some(),
             __option_none(),
+            __bytes_new(),
+            __bytes_from_string(),
+            __bytes_from_array(),
+            __bytes_from_hex(),
+            __bytes_len(),
+            __bytes_get(),
+            __bytes_set(),
+            __bytes_push(),
+            __bytes_extend(),
+            __bytes_slice(),
+            __bytes_resize(),
+            __bytes_fill(),
+            __bytes_to_string(),
+            __bytes_to_hex(),
+            __bytes_get_u8(),
+            __bytes_set_u8(),
+            __bytes_get_u16_be(),
+            __bytes_get_u16_le(),
+            __bytes_set_u16_be(),
+            __bytes_set_u16_le(),
+            __bytes_get_u32_be(),
+            __bytes_get_u32_le(),
+            __bytes_set_u32_be(),
+            __bytes_set_u32_le(),
+            __bytes_get_u64_be(),
+            __bytes_get_u64_le(),
+            __bytes_set_u64_be(),
+            __bytes_set_u64_le(),
             is_ok(),
             is_err(),
             is_some(),
@@ -753,10 +2012,64 @@ impl StdModule {
             expect(),
             unwrap_err(),
             ok_or(),
+            len(),
             ok(),
             err(),
             some(),
             none(),
+            bytes_new(),
+            bytes(),
+            bytes_len(),
+            bytes_get(),
+            bytes_set(),
+            bytes_push(),
+            bytes_extend(),
+            bytes_slice(),
+            bytes_resize(),
+            bytes_fill(),
+            bytes_to_string(),
+            bytes_to_hex(),
+            get_u8(),
+            set_u8(),
+            get_u16_be(),
+            get_u16_le(),
+            set_u16_be(),
+            set_u16_le(),
+            get_u32_be(),
+            get_u32_le(),
+            set_u32_be(),
+            set_u32_le(),
+            get_u64_be(),
+            get_u64_le(),
+            set_u64_be(),
+            set_u64_le(),
+            to_string(),
+            to_hex(),
+            slice(),
+            push(),
+            extend(),
+            fill(),
+            resize(),
+            get(),
+            set(),
+            __sha1(),
+            __base64_encode(),
+            __base64_decode(),
+            __sec_websocket_accept(),
+            sha1(),
+            base64_encode(),
+            base64_decode(),
+            sec_websocket_accept(),
+            __net_tcp_connect(),
+            __net_tls_connect(),
+            __net_read(),
+            __net_write(),
+            __net_close(),
+            tcp_connect(),
+            tls_connect(),
+            net_read(),
+            net_write(),
+            net_close(),
         ];
         
         if let Some(extra) = EXTRA_NATIVES.get() {

@@ -126,17 +126,20 @@ impl VM {
                             self.stack[fp + dest] = Value::Bool(self.read_byte()? != 0);
                         }
                         OpCode::ConstString | OpCode::ConstRef | OpCode::ConstFun => {
-                            let byte = self.read_byte()? as usize;
-                            self.stack[fp + dest] = self.constants[byte].clone();
+                            let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                            let idx = u16::from_le_bytes(bytes) as usize;
+                            self.stack[fp + dest] = self.constants[idx].clone();
                         }
                         OpCode::ConstObj => {
-                            let byte = self.read_byte()? as usize;
-                            if let Value::Object(ref_cell) = &self.constants[byte] {
+                            let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                            let idx = u16::from_le_bytes(bytes) as usize;
+                            if let Some(Value::Object(ref_cell)) = self.constants.get(idx) {
                                 let cloned_map = ref_cell.borrow().clone();
                                 self.stack[fp + dest] =
                                     Value::Object(Rc::new(RefCell::new(cloned_map)));
                             } else {
-                                return Err(Error::UnexpectedType);
+                                self.stack[fp + dest] =
+                                    Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
                             }
                         }
                         OpCode::ConstReg => {
@@ -144,7 +147,8 @@ impl VM {
                             self.stack[fp + dest] = self.stack[fp + byte].clone();
                         }
                         OpCode::ConstEnum => {
-                            let enum_idx = self.read_byte()?;
+                            let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                            let enum_idx = u16::from_le_bytes(bytes);
                             let tag = self.read_byte()?;
                             let count = self.read_byte()?;
 
@@ -159,7 +163,7 @@ impl VM {
                             }
 
                             self.stack[fp + dest] = Value::EnumField {
-                                const_idx: enum_idx,
+                                const_idx: enum_idx as usize,
                                 tag,
                                 args,
                             };
@@ -201,16 +205,14 @@ impl VM {
                     let fun_reg = self.read_byte()?;
                     let arg_count = self.read_byte()?;
 
-                    let current_fp = self.current()?.pointer;
-                    let func_val = self.stack[current_fp + fun_reg as usize].clone();
-
+                    let func_val = self.stack[fp + fun_reg as usize].clone();
                     match func_val {
                         Value::Fun { arity: _, body } => {
                             let new_fp = self.stack.len();
 
                             for _ in 0..arg_count {
                                 let arg_reg_idx = self.read_byte()? as usize;
-                                let arg_val = self.stack[current_fp + arg_reg_idx].clone();
+                                let arg_val = self.stack[fp + arg_reg_idx].clone();
                                 self.stack.push(arg_val);
                             }
 
@@ -229,6 +231,7 @@ impl VM {
                             let mut args = Vec::new();
                             let current_fp = self.current()?.pointer;
 
+
                             for _ in 0..arg_count {
                                 let arg_reg = self.read_byte()? as usize;
                                 let arg = self.stack[current_fp + arg_reg].clone();
@@ -239,14 +242,16 @@ impl VM {
 
                             let result = (native_fn.call)(args).map_err(|e| {
                                 Error::NativeFunctionFailed(format!(
-                                    "Error in native function: {}, IP: {}",
-                                    e, current_ip
+                                    "Error in native function '{}': {}, IP: {}",
+                                    native_fn.name, e, current_ip
                                 ))
                             })?;
 
                             self.stack[fp + dest_reg as usize] = result;
                         }
                         _ => {
+                            let frame_pointer = self.current()?.pointer;
+                            eprintln!("UnexpectedTypeCall in func: dest_reg = {}, fun_reg = {}, func_val = {:?}, fp = {}, stack_slice = {:?}", dest_reg, fun_reg, func_val, frame_pointer, &self.stack[frame_pointer..std::cmp::min(self.stack.len(), frame_pointer + 20)]);
                             return Err(Error::UnexpectedTypeCall);
                         }
                     }
@@ -282,13 +287,13 @@ impl VM {
                 OpCode::GetProperty => {
                     let dest = self.read_byte()? as usize;
                     let src_idx = self.read_byte()? as usize;
-                    let idx = self.read_byte()? as usize;
+                    let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                    let idx = u16::from_le_bytes(bytes) as usize;
 
                     let hash = match self.constants.get(idx) {
                         Some(Value::Hash(h)) => *h,
                         _ => panic!("Expected hash constant at index {}", idx),
                     };
-
                     if let Value::Object(obj_ref) = &self.stack[fp + src_idx] {
                         let val = obj_ref.borrow().get(&hash).cloned();
 
@@ -318,14 +323,14 @@ impl VM {
                 }
                 OpCode::SetProperty => {
                     let obj_idx = self.read_byte()? as usize;
-                    let const_idx = self.read_byte()? as usize;
+                    let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                    let const_idx = u16::from_le_bytes(bytes) as usize;
                     let val_idx = self.read_byte()? as usize;
 
                     let hash = match self.constants.get(const_idx) {
                         Some(Value::Hash(h)) => *h,
                         _ => panic!("Expected hash constant"),
                     };
-
                     let new_val = self.stack[fp + val_idx].clone();
 
                     if let Value::Object(obj_ref) = &self.stack[fp + obj_idx] {
@@ -346,6 +351,20 @@ impl VM {
                     // 4. Przypisujemy do obiektu
                     if let Value::Object(rc_map) = &self.stack[fp + obj_reg] {
                         rc_map.borrow_mut().insert(runtime_hash, val);
+                    } else if let Value::Bytes(bytes_ref) = &self.stack[fp + obj_reg] {
+                        let index = match key_val {
+                            Value::Int(i) => *i,
+                            _ => panic!("Runtime Error: Bytes index must be integer"),
+                        };
+                        let byte_val = match val {
+                            Value::Int(i) => (i & 0xFF) as u8,
+                            _ => panic!("Runtime Error: Value assigned to Bytes index must be integer byte"),
+                        };
+                        let mut b = bytes_ref.borrow_mut();
+                        if index < 0 || (index as usize) >= b.len() {
+                            panic!("Runtime Error: Bytes index out of bounds: {} (len {})", index, b.len());
+                        }
+                        b[index as usize] = byte_val;
                     } else {
                         panic!("Attempted to set property on non-object");
                     }
@@ -359,42 +378,55 @@ impl VM {
                     let key_val = &self.stack[fp + key_reg];
                     let runtime_hash = key_val.get_hash();
 
-                    if let Value::Object(rc_map) = &self.stack[fp + obj_reg] {
+                    let obj_val = self.stack[fp + obj_reg].clone();
+                    if let Value::Object(rc_map) = obj_val {
                         let value = rc_map
                             .borrow()
                             .get(&runtime_hash)
                             .cloned()
                             .expect("Missing property from object");
                         self.stack[fp + target_reg] = value;
-                    } else if let Value::EnumField { args, .. } = &self.stack[fp + obj_reg] {
+                    } else if let Value::EnumField { args, .. } = obj_val {
                         if let Some((_, val)) = args.iter().find(|(h, _)| *h == runtime_hash) {
                             self.stack[fp + target_reg] = val.clone();
                         } else {
                             return Err(Error::PropertyNotFound(runtime_hash));
                         }
+                    } else if let Value::Bytes(bytes_ref) = obj_val {
+                        let index = match key_val {
+                            Value::Int(i) => *i,
+                            _ => panic!("Runtime Error: Bytes index must be integer"),
+                        };
+                        let byte_val = {
+                            let b = bytes_ref.borrow();
+                            if index < 0 || (index as usize) >= b.len() {
+                                panic!("Runtime Error: Bytes index out of bounds: {} (len {})", index, b.len());
+                            }
+                            b[index as usize] as i64
+                        };
+                        self.stack[fp + target_reg] = Value::Int(byte_val);
                     } else {
                         panic!("Runtime Error: Attempted to get property from non-object");
                     }
                 }
                 OpCode::LoadNative => {
                     let dest = self.read_byte()? as usize;
-                    let hash_idx = self.read_byte()? as usize;
+                    let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                    let hash_idx = u16::from_le_bytes(bytes) as usize;
 
                     let hash = match self.constants.get(hash_idx) {
                         Some(Value::Hash(h)) => Value::Hash(*h),
                         _ => panic!("Expected hash constant"),
                     };
-
-                    self.stack[fp + dest] = Value::NativeFun(
-                        self.native_functions
-                            .iter()
-                            .find(|f| {
-                                Value::Hash(Value::String(f.name.to_string().into()).get_hash())
-                                    == hash
-                            })
-                            .unwrap()
-                            .clone(),
-                    );
+                    let found = self.native_functions
+                        .iter()
+                        .find(|f| {
+                            Value::Hash(Value::String(f.name.to_string().into()).get_hash())
+                                == hash
+                        })
+                        .unwrap()
+                        .clone();
+                    self.stack[fp + dest] = Value::NativeFun(found);
                 }
                 OpCode::LoadGlobal => {
                     let dest = self.read_byte()? as usize;
@@ -422,15 +454,15 @@ impl VM {
                 OpCode::MatchEnum => {
                     let dest = self.read_byte()? as usize;
                     let src = self.read_byte()? as usize;
-                    let enum_idx = self.read_byte()?;
+                    let bytes: [u8; 2] = self.read_n(2)?.try_into().unwrap();
+                    let enum_idx = u16::from_le_bytes(bytes);
                     let tag = self.read_byte()?;
-
                     let matched = match &self.stack[fp + src] {
                         Value::EnumField {
                             const_idx: c,
                             tag: t,
                             ..
-                        } => *c == enum_idx && *t == tag,
+                        } => *c == enum_idx as usize && *t == tag,
                         _ => false,
                     };
 
@@ -453,6 +485,7 @@ impl VM {
             Value::NativeFun(_) => true,
             Value::Object(items) => items.borrow().len() > 0,
             Value::EnumDefinition(_) | Value::EnumField { .. } => true,
+            Value::Bytes(bytes) => bytes.borrow().len() > 0,
         }
     }
 

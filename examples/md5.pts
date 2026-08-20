@@ -28,7 +28,7 @@ part hex {
 	(@name, @val) => {
 		__decimal_value = 0;
 
-		let __stripped = str.strip_prefix(@val, "0x").unwrap_or(@val);
+		let __stripped = @val.strip_prefix("0x").unwrap_or(@val);
 		
 		let __i = 0;
 		let __uppercase = str.upper(__stripped);
@@ -122,7 +122,7 @@ let i(b, c, d) = c ^ (b | (d ^ MAXU))
 
 let input = "I love hashing the values";
 
-let len_bytes = str.len(input);
+let len_bytes = input.len();
 let len_bits = len_bytes * 8;
 
 let idx = 0;

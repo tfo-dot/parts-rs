@@ -23,6 +23,7 @@ mod tests {
             0,
             OpCode::ConstFun as u8,
             0,
+            0,
             OpCode::Call as u8,
             1,
             0,
@@ -57,6 +58,7 @@ mod tests {
             OpCode::Load as u8,
             0,
             OpCode::ConstFun as u8,
+            0,
             0,
             OpCode::Load as u8,
             1,
@@ -145,7 +147,8 @@ mod tests {
             OpCode::Load as u8,
             1,
             OpCode::ConstEnum as u8,
-            0, // enum_idx
+            0, // enum_idx lo
+            0, // enum_idx hi
             0, // tag
             1, // count
         ]);
@@ -166,6 +169,7 @@ mod tests {
             0,
             OpCode::ConstFun as u8,
             0,
+            0,
             OpCode::Call as u8,
             1, // return into reg 1
             0, // func is at reg 0
@@ -173,7 +177,8 @@ mod tests {
             OpCode::GetProperty as u8,
             2, // dest reg 2
             1, // obj reg 1
-            1, // const idx 1 (hash)
+            1, // const idx lo
+            0, // const idx hi
             OpCode::Return as u8,
             2,
         ];

@@ -40,20 +40,20 @@ define_opcodes! {
 impl Emitter {
     fn get_byte_length(op: IrOp) -> i64 {
         match op {
-            IrOp::LoadConst { dest: _, idx: _ } => 4,
+            IrOp::LoadConst { dest: _, idx: _ } => 5,
             IrOp::LoadInt { dest: _, val: _ } => 11,
             IrOp::LoadDouble { dest: _, val: _ } => 11,
             IrOp::LoadBool { dest: _, val: _ } => 4,
             IrOp::LoadReg { dest: _, src: _ } => 4,
-            IrOp::LoadNative { dest: _, src: _ } => 3,
+            IrOp::LoadNative { dest: _, src: _ } => 4,
             IrOp::LoadGlobal { dest: _, src: _ } => 3,
-            IrOp::LoadFun { dest: _, src: _ } => 4,
-            IrOp::LoadObject { dest: _, src: _ } => 4,
+            IrOp::LoadFun { dest: _, src: _ } => 5,
+            IrOp::LoadObject { dest: _, src: _ } => 5,
             IrOp::GetProperty {
                 dest: _,
                 obj: _,
                 key: _,
-            } => 4,
+            } => 5,
             IrOp::GetPropertyDyn {
                 dest: _,
                 obj: _,
@@ -63,7 +63,7 @@ impl Emitter {
                 obj: _,
                 key: _,
                 val: _,
-            } => 4,
+            } => 5,
             IrOp::SetPropertyDyn {
                 obj: _,
                 key: _,
@@ -94,8 +94,8 @@ impl Emitter {
                 enum_idx: _,
                 tag: _,
                 args,
-            } => 6 + 9 * args.len() as i64,
-            IrOp::MatchEnum { .. } => 5,
+            } => 7 + 9 * args.len() as i64,
+            IrOp::MatchEnum { .. } => 6,
         }
     }
 
@@ -120,7 +120,7 @@ impl Emitter {
                     buff.push(OpCode::Load as u8);
                     buff.push(dest);
                     buff.push(OpCode::ConstRef as u8);
-                    buff.push(idx);
+                    buff.extend_from_slice(&(idx as u16).to_le_bytes());
                 }
                 IrOp::LoadInt { dest, val } => {
                     buff.push(OpCode::Load as u8);
@@ -150,7 +150,7 @@ impl Emitter {
                 IrOp::LoadNative { dest, src } => {
                     buff.push(OpCode::LoadNative as u8);
                     buff.push(dest);
-                    buff.push(src);
+                    buff.extend_from_slice(&(src as u16).to_le_bytes());
                 }
                 IrOp::LoadGlobal { dest, src } => {
                     buff.push(OpCode::LoadGlobal as u8);
@@ -161,18 +161,18 @@ impl Emitter {
                     buff.push(OpCode::Load as u8);
                     buff.push(dest);
                     buff.push(OpCode::ConstFun as u8);
-                    buff.push(src);
+                    buff.extend_from_slice(&(src as u16).to_le_bytes());
                 }
                 IrOp::LoadObject { dest, src } => {
                     buff.push(OpCode::Load as u8);
                     buff.push(dest);
                     buff.push(OpCode::ConstObj as u8);
-                    buff.push(src);
+                    buff.extend_from_slice(&(src as u16).to_le_bytes());
                 }
                 IrOp::SetProperty { key, val, obj } => {
                     buff.push(OpCode::SetProperty as u8);
                     buff.push(obj);
-                    buff.push(key);
+                    buff.extend_from_slice(&(key as u16).to_le_bytes());
                     buff.push(val);
                 }
                 IrOp::SetPropertyDyn { key, val, obj } => {
@@ -185,7 +185,7 @@ impl Emitter {
                     buff.push(OpCode::GetProperty as u8);
                     buff.push(dest);
                     buff.push(obj);
-                    buff.push(key);
+                    buff.extend_from_slice(&(key as u16).to_le_bytes());
                 }
                 IrOp::GetPropertyDyn { dest, key, obj } => {
                     buff.push(OpCode::GetPropertyDyn as u8);
@@ -268,7 +268,7 @@ impl Emitter {
                     buff.push(OpCode::Load as u8);
                     buff.push(dest);
                     buff.push(OpCode::ConstEnum as u8);
-                    buff.push(enum_idx);
+                    buff.extend_from_slice(&(enum_idx as u16).to_le_bytes());
                     buff.push(tag);
 
                     buff.push(args.len().try_into().unwrap());
@@ -287,7 +287,7 @@ impl Emitter {
                     buff.push(OpCode::MatchEnum as u8);
                     buff.push(dest);
                     buff.push(src);
-                    buff.push(enum_idx);
+                    buff.extend_from_slice(&(enum_idx as u16).to_le_bytes());
                     buff.push(tag);
                 }
             }

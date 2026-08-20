@@ -23,10 +23,11 @@ pub enum Value {
     Hash(u64),
     EnumDefinition(u8),
     EnumField {
-        const_idx: u8,
+        const_idx: usize,
         tag: u8,
         args: Vec<(u64, Value)>,
     },
+    Bytes(Rc<RefCell<Vec<u8>>>),
 }
 
 use std::hash::{Hash, Hasher};
@@ -78,12 +79,17 @@ impl Hash for Value {
                 args,
             } => {
                 state.write_u8(7);
-                state.write_u8(*const_idx);
+                state.write_usize(*const_idx);
                 state.write_u8(*tag);
                 for (k, v) in args {
                     k.hash(state);
                     v.hash(state);
                 }
+            }
+            Value::Bytes(bytes) => {
+                state.write_u8(8);
+                let ptr = Rc::as_ptr(bytes) as usize;
+                ptr.hash(state);
             }
         }
     }
@@ -192,6 +198,10 @@ impl Value {
             _ => false,
         }
     }
+    pub fn bytes(data: Vec<u8>) -> Value {
+        Value::Bytes(Rc::new(RefCell::new(data)))
+    }
+
 
 
     pub fn call(&self, args: Vec<Value>, constants: Vec<Value>) -> Result<Option<Value>, String> {
@@ -311,7 +321,7 @@ impl Value {
                 args,
             } => {
                 buffer.push(9);
-                buffer.push(*const_idx);
+                buffer.extend_from_slice(&(*const_idx as u16).to_le_bytes());
                 buffer.push(*tag);
 
                 buffer.push(args.len() as u8);
@@ -320,6 +330,12 @@ impl Value {
                     buffer.extend_from_slice(&k.to_le_bytes());
                     v.encode(buffer);
                 }
+            }
+            Value::Bytes(bytes) => {
+                buffer.push(10);
+                let slice = bytes.borrow();
+                buffer.extend_from_slice(&(slice.len() as u64).to_le_bytes());
+                buffer.extend_from_slice(&slice);
             }
             _ => unreachable!(),
         }
@@ -438,18 +454,14 @@ impl Value {
                 }
                 9 => {
                     idx += 1;
-
-                    let const_idx = raw[idx];
-                    idx += 1;
-
+                    let const_bytes: [u8; 2] = raw[idx..idx + 2].try_into().unwrap();
+                    let const_idx = u16::from_le_bytes(const_bytes) as usize;
+                    idx += 2;
                     let tag = raw[idx];
                     idx += 1;
-
                     let len = raw[idx];
                     idx += 1;
-
-                    let mut args = vec![];
-
+                    let mut args = Vec::with_capacity(len as usize);
                     for _ in 0..len {
                         let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
                         idx += 8;
@@ -463,6 +475,17 @@ impl Value {
                         tag,
                         args,
                     });
+                }
+                10 => {
+                    idx += 1;
+                    let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+                    let len = u64::from_le_bytes(len_bytes) as usize;
+                    idx += 8;
+
+                    let data = &raw[idx..idx + len];
+                    idx += len;
+
+                    values.push(Value::Bytes(Rc::new(RefCell::new(data.to_vec()))));
                 }
                 _ => panic!("Unexpected value type at index {}", idx),
             }
@@ -566,6 +589,10 @@ impl Display for Value {
                     }
                     write!(f, "])")
                 }
+            }
+            Value::Bytes(bytes) => {
+                let b = bytes.borrow();
+                write!(f, "<bytes: {} bytes>", b.len())
             }
         }
     }

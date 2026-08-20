@@ -478,10 +478,8 @@ impl IrOptimizer {
                             IrOp::SetPropertyDyn { obj, key, val } => {
                                 *obj == *dest || *key == *dest || *val == *dest
                             }
-                            IrOp::LoadReg { src, .. }
-                            | IrOp::LoadObject { src, .. }
-                            | IrOp::LoadNative { src, .. }
-                            | IrOp::LoadFun { src, .. } => *src == *dest,
+                            IrOp::LoadReg { src, .. } => *src == *dest,
+                            IrOp::SetProperty { obj, val, .. } => *obj == *dest || *val == *dest,
                             IrOp::Call { what, args, .. } => *what == *dest || args.contains(dest),
                             IrOp::LoadEnumField { args, .. } => {
                                 args.iter().any(|(_, reg)| reg == dest)

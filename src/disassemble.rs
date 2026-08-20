@@ -38,7 +38,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                     offset + 4
                 }
                 OpCode::ConstString | OpCode::ConstRef | OpCode::ConstFun | OpCode::ConstObj => {
-                    let idx = code[offset + 3] as usize;
+                    let idx = u16::from_le_bytes([code[offset + 3], code[offset + 4]]) as usize;
                     println!(
                         " ConstIdx: {} ({:?})",
                         idx,
@@ -47,27 +47,29 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                             .map(|v| v.to_string())
                             .unwrap_or_default()
                     );
-                    offset + 4
+                    offset + 5
                 }
                 OpCode::ConstReg => {
                     println!(" FromReg: {}", code[offset + 3]);
                     offset + 4
                 }
                 OpCode::ConstEnum => {
-                    let args_count = code[offset + 5];
+                    let enum_idx = u16::from_le_bytes([code[offset + 3], code[offset + 4]]);
+                    let tag = code[offset + 5];
+                    let args_count = code[offset + 6];
                     let mut args = vec![];
 
                     for i in 0..args_count {
-                        args.push(code[offset + 6 + (i as usize) * 9 + 8]);
+                        args.push(code[offset + 7 + (i as usize) * 9 + 8]);
                     }
 
                     println!(
                         " Enum: {}, tag: {} fields: {:?}",
-                        code[offset + 3],
-                        code[offset + 4],
+                        enum_idx,
+                        tag,
                         args
                     );
-                    offset + 6 + 9* args_count as usize
+                    offset + 7 + 9 * args_count as usize
                 }
 
                 _ => {
@@ -94,7 +96,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
         }
         OpCode::LoadNative => {
             let reg = code[offset + 1];
-            let idx = code[offset + 2] as usize;
+            let idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
             println!(
                 "{:-12} Reg: {:<3} NativeIdx: {} ({})",
                 "LOAD_NATIVE",
@@ -105,7 +107,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                     .map(|v| v.to_string())
                     .unwrap_or_default()
             );
-            offset + 3
+            offset + 4
         }
         OpCode::Binary => {
             let op = code[offset + 1];
@@ -161,8 +163,8 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
         }
         OpCode::SetProperty => {
             let obj = code[offset + 1];
-            let idx = code[offset + 2] as usize;
-            let src = code[offset + 3];
+            let idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
+            let src = code[offset + 4];
             println!(
                 "{:-12} ObjReg: {:<3} ConstIdx: {} ({}) SrcReg: {:<3}",
                 "SET_PROP",
@@ -174,7 +176,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                     .unwrap_or_default(),
                 src
             );
-            offset + 4
+            offset + 5
         }
         OpCode::GetPropertyDyn => {
             let dest = code[offset + 1];
@@ -232,13 +234,13 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
         OpCode::MatchEnum => {
             let dest = code[offset + 1];
             let src = code[offset + 2];
-            let enum_idx = code[offset + 3];
-            let tag = code[offset + 4];
+            let enum_idx = u16::from_le_bytes([code[offset + 3], code[offset + 4]]);
+            let tag = code[offset + 5];
             println!(
                 "{:-12} Dest: {} Src: {} EnumIdx: {} Tag: {}",
                 "MATCH_ENUM", dest, src, enum_idx, tag
             );
-            offset + 5
+            offset + 6
         }
         _ => {
             println!("{:?}", opcode);

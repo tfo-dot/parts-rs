@@ -138,7 +138,7 @@ impl ScannerRule {
             ScannerRule {
                 result: TokenType::Keyword,
                 base_rule: Some(Box::new(|r| {
-                    (*r >= 'a' && *r <= 'z') || (*r >= 'A' && *r <= 'Z') || *r == '_'
+                    (*r >= 'a' && *r <= 'z') || (*r >= 'A' && *r <= 'Z') || *r == '_' || (*r >= '0' && *r <= '9')
                 })),
                 rule: None,
                 process: Some(Box::new(|mappings, runs, span| {
