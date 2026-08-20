@@ -109,6 +109,91 @@ impl Rem for Value {
 }
 
 impl Value {
+    pub fn ok(val: impl Into<Value>) -> Value {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args: vec![(
+                Value::String(std::rc::Rc::new("val".to_string())).get_hash(),
+                val.into(),
+            )],
+        }
+    }
+
+    pub fn err(err: impl Into<Value>) -> Value {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            args: vec![(
+                Value::String(std::rc::Rc::new("err".to_string())).get_hash(),
+                err.into(),
+            )],
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        match self {
+            Value::EnumField {
+                const_idx: 0,
+                tag: 0,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_err(&self) -> bool {
+        match self {
+            Value::EnumField {
+                const_idx: 0,
+                tag: 1,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+    pub fn some(val: impl Into<Value>) -> Value {
+        Value::EnumField {
+            const_idx: 1,
+            tag: 0,
+            args: vec![(
+                Value::String(std::rc::Rc::new("val".to_string())).get_hash(),
+                val.into(),
+            )],
+        }
+    }
+
+    pub fn none() -> Value {
+        Value::EnumField {
+            const_idx: 1,
+            tag: 1,
+            args: vec![],
+        }
+    }
+
+    pub fn is_some(&self) -> bool {
+        match self {
+            Value::EnumField {
+                const_idx: 1,
+                tag: 0,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        match self {
+            Value::EnumField {
+                const_idx: 1,
+                tag: 1,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
+
     pub fn call(&self, args: Vec<Value>, constants: Vec<Value>) -> Result<Option<Value>, String> {
         match self {
             Value::Fun { arity, body } => {
@@ -451,14 +536,36 @@ impl Display for Value {
                 tag,
                 args,
             } => {
-                write!(f, "EnumField({}, tag: {}, args: [", const_idx, tag)?;
-                for (i, (_, val)) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                if *const_idx == 0 && *tag == 0 {
+                    if let Some((_, val)) = args.first() {
+                        write!(f, "Ok({})", val)
+                    } else {
+                        write!(f, "Ok")
                     }
-                    write!(f, "{}", val)?;
+                } else if *const_idx == 0 && *tag == 1 {
+                    if let Some((_, err)) = args.first() {
+                        write!(f, "Err({})", err)
+                    } else {
+                        write!(f, "Err")
+                    }
+                } else if *const_idx == 1 && *tag == 0 {
+                    if let Some((_, val)) = args.first() {
+                        write!(f, "Some({})", val)
+                    } else {
+                        write!(f, "Some")
+                    }
+                } else if *const_idx == 1 && *tag == 1 {
+                    write!(f, "None")
+                } else {
+                    write!(f, "EnumField({}, tag: {}, args: [", const_idx, tag)?;
+                    for (i, (_, val)) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", val)?;
+                    }
+                    write!(f, "])")
                 }
-                write!(f, "])")
             }
         }
     }

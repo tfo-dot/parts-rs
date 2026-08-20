@@ -3,7 +3,7 @@ let std = import `@std/std.pts`;
 "Macro:"
 
 part println {
-  (@) => { std.println(@) }
+  (@) => { print(@); println(); }
 }
 
 "Show current playing music if the music is playing:"

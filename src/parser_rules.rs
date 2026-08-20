@@ -297,6 +297,47 @@ impl ParserRule {
                             let ident = parser.advance()?;
                             if ident.lexeme == "_" {
                                 MatchPattern::Wildcard(None)
+                            } else if (ident.lexeme == "Ok" || ident.lexeme == "Err")
+                                && parser.match_operator("LEFT_PAREN")
+                            {
+                                let mut fields = Vec::new();
+                                while !parser.check_operator("RIGHT_PAREN") {
+                                    let field_tok = parser.advance()?;
+                                    fields.push(field_tok.lexeme);
+                                    if !parser.match_operator("COMMA") {
+                                        break;
+                                    }
+                                }
+                                parser.expect_operator("RIGHT_PAREN")?;
+                                MatchPattern::Enum {
+                                    name: "Result".to_string(),
+                                    tag: ident.lexeme,
+                                    fields,
+                                }
+                            } else if ident.lexeme == "Some" && parser.match_operator("LEFT_PAREN") {
+                                let mut fields = Vec::new();
+                                while !parser.check_operator("RIGHT_PAREN") {
+                                    let field_tok = parser.advance()?;
+                                    fields.push(field_tok.lexeme);
+                                    if !parser.match_operator("COMMA") {
+                                        break;
+                                    }
+                                }
+                                parser.expect_operator("RIGHT_PAREN")?;
+                                MatchPattern::Enum {
+                                    name: "Option".to_string(),
+                                    tag: "Some".to_string(),
+                                    fields,
+                                }
+                            } else if ident.lexeme == "None" {
+                                if parser.match_operator("LEFT_PAREN") {
+                                    parser.expect_operator("RIGHT_PAREN")?;
+                                }
+                                MatchPattern::Enum {
+                                    name: "Option".to_string(),
+                                    tag: "None".to_string(),
+                                    fields: vec![],
+                                }
                             } else if parser.match_operator("DOUBLE_COLON") {
                                 let tag = parser.expect_kind(TokenType::Identifier)?.lexeme;
                                 let mut fields = Vec::new();

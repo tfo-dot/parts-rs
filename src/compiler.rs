@@ -222,7 +222,7 @@ pub enum IrOp {
 
 impl Compiler {
     pub fn new(source: PathBuf) -> Self {
-        Self {
+        let mut compiler = Self {
             contexts: vec![Context::new()],
             constant_pool: vec![],
             errors: vec![],
@@ -232,7 +232,38 @@ impl Compiler {
             next_label_id: 0,
             source,
             enums: vec![],
-        }
+        };
+
+        compiler.enums.push(EnumDef {
+            name: "Result".to_string(),
+            variants: vec![
+                EnumVariant {
+                    name: "Ok".to_string(),
+                    fields: vec!["val".to_string()],
+                },
+                EnumVariant {
+                    name: "Err".to_string(),
+                    fields: vec!["err".to_string()],
+                },
+            ],
+            idx: 0,
+        });
+        compiler.enums.push(EnumDef {
+            name: "Option".to_string(),
+            variants: vec![
+                EnumVariant {
+                    name: "Some".to_string(),
+                    fields: vec!["val".to_string()],
+                },
+                EnumVariant {
+                    name: "None".to_string(),
+                    fields: vec![],
+                },
+            ],
+            idx: 1,
+        });
+
+        compiler
     }
 
     pub fn with_natives(source: PathBuf, natives: Vec<NativeFunction>) -> Self {
@@ -1219,13 +1250,22 @@ impl Compiler {
                 res_reg
             }
             Ast::EnumDef { name, variants } => {
-                self.constant_pool
-                    .push(Value::EnumDefinition(self.enums.len().try_into().unwrap()));
-                self.enums.push(EnumDef {
-                    name,
-                    variants,
-                    idx: (self.constant_pool.len() as u8) - 1,
-                });
+                if let Some(pos) = self.enums.iter().position(|e| e.name == name) {
+                    let idx = self.enums[pos].idx;
+                    self.enums[pos] = EnumDef {
+                        name,
+                        variants,
+                        idx,
+                    };
+                } else {
+                    self.constant_pool
+                        .push(Value::EnumDefinition(self.enums.len().try_into().unwrap()));
+                    self.enums.push(EnumDef {
+                        name,
+                        variants,
+                        idx: (self.constant_pool.len() as u8) - 1,
+                    });
+                }
 
                 0
             }

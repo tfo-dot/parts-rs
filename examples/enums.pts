@@ -1,5 +1,3 @@
-let std = import `@std/std.pts`;
-
 enum Direction {
 	North(power),
 	East(power),
@@ -9,4 +7,4 @@ enum Direction {
 
 let d = Direction::North(100.0);
 
-std.println(d.power)
+println(d.power)

@@ -28,7 +28,7 @@ part hex {
 	(@name, @val) => {
 		__decimal_value = 0;
 
-		let __stripped = str.strip_prefix(@val, "0x");
+		let __stripped = str.strip_prefix(@val, "0x").unwrap_or(@val);
 		
 		let __i = 0;
 		let __uppercase = str.upper(__stripped);
@@ -129,7 +129,7 @@ let idx = 0;
 let padded_bytes = |><|;
 
 for idx < len_bytes {
-	padded_bytes[idx] = str.byte_at(input, idx);
+	padded_bytes[idx] = str.byte_at(input, idx).unwrap_or(0);
 	idx = idx + 1;
 }
 
@@ -291,4 +291,4 @@ let format_word(word) {
     return result;
 }
 
-std.println(format_word(A), format_word(B), format_word(C), format_word(D));
+println(format_word(A), format_word(B), format_word(C), format_word(D));

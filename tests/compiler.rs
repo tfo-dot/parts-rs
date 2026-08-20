@@ -474,7 +474,7 @@ mod tests {
                 IrOp::LoadInt { dest: 1, val: 100 },
                 IrOp::LoadEnumField {
                     dest: 0,
-                    enum_idx: 0,
+                    enum_idx: 2,
                     tag: 0,
                     args: vec![(Value::String(Rc::new("power".to_string())).get_hash(), 1)],
                 },

@@ -339,7 +339,7 @@ mod tests {
     fn test_enum_display_and_serialization() {
         use std::rc::Rc;
         let val = Value::EnumField {
-            const_idx: 0,
+            const_idx: 2,
             tag: 1,
             args: vec![
                 (12345, Value::Int(42)),
@@ -349,10 +349,16 @@ mod tests {
 
         // Display test
         let formatted = format!("{}", val);
-        assert!(formatted.contains("EnumField(0, tag: 1"));
+        assert!(formatted.contains("EnumField(2, tag: 1"));
         assert!(formatted.contains("42"));
         assert!(formatted.contains("test"));
 
+        // Result Ok / Err display tests
+        let ok_val = Value::ok(Value::Int(100));
+        assert_eq!(format!("{}", ok_val), "Ok(100)");
+
+        let err_val = Value::err("not found");
+        assert_eq!(format!("{}", err_val), "Err(not found)");
         // Serialization roundtrip
         let mut buffer = Vec::new();
         val.encode(&mut buffer);
