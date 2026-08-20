@@ -419,6 +419,23 @@ impl VM {
 
                     self.stack[fp + src] = Self::binary(1, left, Value::Int(1));
                 }
+                OpCode::MatchEnum => {
+                    let dest = self.read_byte()? as usize;
+                    let src = self.read_byte()? as usize;
+                    let enum_idx = self.read_byte()?;
+                    let tag = self.read_byte()?;
+
+                    let matched = match &self.stack[fp + src] {
+                        Value::EnumField {
+                            const_idx: c,
+                            tag: t,
+                            ..
+                        } => *c == enum_idx && *t == tag,
+                        _ => false,
+                    };
+
+                    self.stack[fp + dest] = Value::Bool(matched);
+                }
             }
         }
 

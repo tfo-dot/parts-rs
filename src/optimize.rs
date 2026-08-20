@@ -105,6 +105,12 @@ impl AstOptimizer {
                     self.collect(f);
                 }
             }
+            Ast::Match { target, arms } => {
+                self.collect(target);
+                for arm in arms {
+                    self.collect(&arm.body);
+                }
+            }
             _ => {}
         }
     }
@@ -212,6 +218,12 @@ impl AstOptimizer {
                     self.optimize(f);
                 }
             }
+            Ast::Match { target, arms } => {
+                self.optimize(target);
+                for arm in arms.iter_mut() {
+                    self.optimize(&mut arm.body);
+                }
+            }
             _ => {}
         }
 
@@ -294,6 +306,12 @@ impl AstOptimizer {
                     self.substitute(f, arg_map);
                 }
             }
+            Ast::Match { target, arms } => {
+                self.substitute(target, arg_map);
+                for arm in arms.iter_mut() {
+                    self.substitute(&mut arm.body, arg_map);
+                }
+            }
             _ => {}
         }
     }
@@ -374,7 +392,8 @@ impl IrOptimizer {
                         | IrOp::LoadObject { dest, .. }
                         | IrOp::LoadNative { dest, .. }
                         | IrOp::LoadFun { dest, .. }
-                        | IrOp::LoadEnumField { dest, .. } => {
+                        | IrOp::LoadEnumField { dest, .. }
+                        | IrOp::MatchEnum { dest, .. } => {
                             if *dest == *load_src {
                                 *dest = *final_dest;
                                 merged = true;
@@ -467,6 +486,7 @@ impl IrOptimizer {
                             IrOp::LoadEnumField { args, .. } => {
                                 args.iter().any(|(_, reg)| reg == dest)
                             }
+                            IrOp::MatchEnum { src, .. } => *src == *dest,
                             _ => false,
                         };
 
@@ -486,7 +506,8 @@ impl IrOptimizer {
                             | IrOp::GetProperty { dest: d, .. }
                             | IrOp::GetPropertyDyn { dest: d, .. }
                             | IrOp::Call { dest: d, .. }
-                            | IrOp::LoadEnumField { dest: d, .. } => *d == *dest,
+                            | IrOp::LoadEnumField { dest: d, .. }
+                            | IrOp::MatchEnum { dest: d, .. } => *d == *dest,
                             _ => false,
                         };
 
@@ -515,7 +536,8 @@ impl IrOptimizer {
                     | IrOp::GetProperty { dest, .. }
                     | IrOp::GetPropertyDyn { dest, .. }
                     | IrOp::Call { dest, .. }
-                    | IrOp::LoadEnumField { dest, .. } => Some(*dest),
+                    | IrOp::LoadEnumField { dest, .. }
+                    | IrOp::MatchEnum { dest, .. } => Some(*dest),
                     _ => None,
                 };
 

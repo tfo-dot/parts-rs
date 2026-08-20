@@ -229,6 +229,17 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
 
             offset + 2
         }
+        OpCode::MatchEnum => {
+            let dest = code[offset + 1];
+            let src = code[offset + 2];
+            let enum_idx = code[offset + 3];
+            let tag = code[offset + 4];
+            println!(
+                "{:-12} Dest: {} Src: {} EnumIdx: {} Tag: {}",
+                "MATCH_ENUM", dest, src, enum_idx, tag
+            );
+            offset + 5
+        }
         _ => {
             println!("{:?}", opcode);
             offset + 1

@@ -635,4 +635,68 @@ mod tests {
             }]
         )
     }
+
+    #[test]
+    fn test_match_parser_enum_arms() {
+        use parts::parser::{MatchArm, MatchPattern};
+        let mut p = Parser::new("match d { Direction::North(p) => p * 2, _ => 0 }".to_string());
+        let res = p.parse_all().unwrap();
+
+        assert_eq!(
+            res,
+            vec![Ast::Match {
+                target: Box::new(Ast::Value(Value::Ref("d".to_string()))),
+                arms: vec![
+                    MatchArm {
+                        pattern: MatchPattern::Enum {
+                            name: "Direction".to_string(),
+                            tag: "North".to_string(),
+                            fields: vec!["p".to_string()],
+                        },
+                        body: Box::new(Ast::Binary {
+                            left: Box::new(Ast::Value(Value::Ref("p".to_string()))),
+                            right: Box::new(Ast::Value(Value::Int(2))),
+                            operator: parts::parser::BinaryOperator::Multiply,
+                        }),
+                    },
+                    MatchArm {
+                        pattern: MatchPattern::Wildcard(None),
+                        body: Box::new(Ast::Value(Value::Int(0))),
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn test_match_parser_unit_and_block_arm() {
+        use parts::parser::{MatchArm, MatchPattern};
+        let mut p = Parser::new("match s { Status::Active => { return 1 }, other => other }".to_string());
+        let res = p.parse_all().unwrap();
+
+        assert_eq!(
+            res,
+            vec![Ast::Match {
+                target: Box::new(Ast::Value(Value::Ref("s".to_string()))),
+                arms: vec![
+                    MatchArm {
+                        pattern: MatchPattern::Enum {
+                            name: "Status".to_string(),
+                            tag: "Active".to_string(),
+                            fields: vec![],
+                        },
+                        body: Box::new(Ast::Block {
+                            code: vec![Ast::Return {
+                                value: Box::new(Ast::Value(Value::Int(1))),
+                            }],
+                        }),
+                    },
+                    MatchArm {
+                        pattern: MatchPattern::Wildcard(Some("other".to_string())),
+                        body: Box::new(Ast::Value(Value::Ref("other".to_string()))),
+                    },
+                ],
+            }]
+        );
+    }
 }

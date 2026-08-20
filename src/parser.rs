@@ -399,6 +399,27 @@ pub enum Ast {
         name: String,
         variants: Vec<EnumVariant>,
     },
+    Match {
+        target: Box<Ast>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Box<Ast>,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub enum MatchPattern {
+    Enum {
+        name: String,
+        tag: String,
+        fields: Vec<String>,
+    },
+    Value(Value),
+    Wildcard(Option<String>),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq)]

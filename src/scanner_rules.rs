@@ -177,7 +177,8 @@ impl ScannerRule {
                     ("translation", ""),
                     ("in", ""),
                     ("part", ""),
-                    ("enum", "")
+                    ("enum", ""),
+                    ("match", "")
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

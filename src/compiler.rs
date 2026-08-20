@@ -211,6 +211,12 @@ pub enum IrOp {
         tag: u8,
         args: Vec<(u64, u8)>,
     },
+    MatchEnum {
+        dest: u8,
+        src: u8,
+        enum_idx: u8,
+        tag: u8,
+    },
     Label(usize),
 }
 
@@ -468,6 +474,13 @@ impl Compiler {
                 .into_iter()
                 .collect(),
             Ast::Set { name: _, value } => self.find_stds(*value),
+            Ast::Match { target, arms } => {
+                let mut res = self.find_stds(*target);
+                for arm in arms {
+                    res.extend(self.find_stds(*arm.body));
+                }
+                res.into_iter().collect::<HashSet<_>>().into_iter().collect()
+            }
             _ => vec![],
         }
     }
@@ -959,15 +972,16 @@ impl Compiler {
             Ast::Block { code } => {
                 self.current().begin_scope();
 
+                let mut last_reg = 0;
                 for ast in code {
-                    self.compile(ast);
+                    last_reg = self.compile(ast);
 
                     self.current().next_free_register = self.current().local_count;
                 }
 
                 self.current().end_scope();
 
-                0
+                last_reg
             }
 
             Ast::Dot {
@@ -1214,6 +1228,149 @@ impl Compiler {
                 });
 
                 0
+            }
+            Ast::Match { target, arms } => {
+                use crate::parser::MatchPattern;
+                let target_reg = self.compile(*target);
+                let result_reg = self.next_free_address();
+                let end_match_label = self.new_label();
+
+                for arm in arms {
+                    let next_arm_label = self.new_label();
+                    self.current().begin_scope();
+
+                    match arm.pattern {
+                        MatchPattern::Enum { name, tag, fields } => {
+                            let enum_idx = self
+                                .enums
+                                .iter()
+                                .position(|e| e.name == name)
+                                .unwrap_or_else(|| {
+                                    panic!("Referencing enum definition that doesn't exist ({})", name)
+                                });
+                            let enum_def = self.enums[enum_idx].clone();
+                            let tag_idx = enum_def
+                                .variants
+                                .iter()
+                                .position(|v| v.name == tag)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Referencing enum field that doesn't exist ({}::{})",
+                                         name, tag
+                                     )
+                                 });
+                            let tag_info = &enum_def.variants[tag_idx];
+
+                            if fields.len() != tag_info.fields.len() {
+                                panic!(
+                                    "Pattern for {}::{} expected {} fields, got {}",
+                                    name,
+                                    tag,
+                                    tag_info.fields.len(),
+                                    fields.len()
+                                );
+                            }
+
+                            let check_reg = self.next_free_address();
+                            self.add_inst(IrOp::MatchEnum {
+                                dest: check_reg,
+                                src: target_reg,
+                                enum_idx: enum_idx as u8,
+                                tag: tag_idx as u8,
+                            });
+
+                            self.add_inst(IrOp::JumpNot {
+                                target: next_arm_label,
+                                condition: check_reg,
+                            });
+
+                            for (i, field_binding) in fields.into_iter().enumerate() {
+                                if field_binding != "_" {
+                                    let field_def_name = &tag_info.fields[i];
+                                    let hash = Value::Hash(
+                                        Value::String(Rc::new(field_def_name.clone())).get_hash(),
+                                    );
+                                    let hash_idx = match self.constant_pool.iter().position(|c| *c == hash) {
+                                        Some(idx) => idx,
+                                        None => {
+                                            self.constant_pool.push(hash);
+                                            self.constant_pool.len() - 1
+                                        }
+                                    };
+
+                                    let field_reg = self.current().add_local(field_binding);
+                                    self.add_inst(IrOp::GetProperty {
+                                        dest: field_reg,
+                                        obj: target_reg,
+                                        key: hash_idx as u8,
+                                    });
+                                }
+                            }
+                        }
+                        MatchPattern::Value(val) => {
+                            let val_reg = self.next_free_address();
+                            let v = self.convert_const(val);
+                            match v {
+                                Value::Int(i) => self.add_inst(IrOp::LoadInt { dest: val_reg, val: i }),
+                                Value::Double(d) => self.add_inst(IrOp::LoadDouble { dest: val_reg, val: d }),
+                                Value::Bool(b) => self.add_inst(IrOp::LoadBool { dest: val_reg, val: b }),
+                                _ => {
+                                    let idx = match self.constant_pool.iter().position(|x| x == &v) {
+                                        Some(expr) => expr as u8,
+                                        None => {
+                                            self.constant_pool.push(v);
+                                            (self.constant_pool.len() - 1) as u8
+                                        }
+                                    };
+                                    self.add_inst(IrOp::LoadConst {
+                                        dest: val_reg,
+                                        idx,
+                                    });
+                                }
+                            }
+
+                            let cmp_reg = self.next_free_address();
+                            self.add_inst(IrOp::Binary {
+                                dest: cmp_reg,
+                                op: BinaryOperator::Equals,
+                                left: target_reg,
+                                right: val_reg,
+                            });
+
+                            self.add_inst(IrOp::JumpNot {
+                                target: next_arm_label,
+                                condition: cmp_reg,
+                            });
+                        }
+                        MatchPattern::Wildcard(binding) => {
+                            if let Some(var_name) = binding {
+                                if var_name != "_" {
+                                    let bound_reg = self.current().add_local(var_name);
+                                    self.add_inst(IrOp::LoadReg {
+                                        dest: bound_reg,
+                                        src: target_reg,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    let body_reg = self.compile(*arm.body);
+                    self.add_inst(IrOp::LoadReg {
+                        dest: result_reg,
+                        src: body_reg,
+                    });
+
+                    self.current().end_scope();
+
+                    self.add_inst(IrOp::Jump {
+                        target: end_match_label,
+                    });
+                    self.add_inst(IrOp::Label(next_arm_label));
+                }
+
+                self.add_inst(IrOp::Label(end_match_label));
+                result_reg
             }
         }
     }

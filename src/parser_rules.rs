@@ -1,5 +1,5 @@
 use crate::{
-    parser::{Ast, EnumVariant, Error as ParserError, ImportType, MacroArm, Parser, Value},
+    parser::{Ast, EnumVariant, Error as ParserError, ImportType, MacroArm, MatchArm, MatchPattern, Parser, Value},
     scanner::{Span, Token, TokenType},
 };
 use std::{fmt, sync::Arc};
@@ -257,6 +257,97 @@ impl ParserRule {
                             body: Box::new(body),
                         })
                     }
+                }),
+            },
+            ParserRule {
+                id: "MatchExpr".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_keyword("MATCH")),
+                parse: Arc::new(|parser| {
+                    let target = parser.parse()?;
+
+                    parser.expect_operator("LEFT_BRACE")?;
+
+                    let mut arms = Vec::new();
+
+                    while !parser.check_operator("RIGHT_BRACE") {
+                        let pattern = if parser.match_operator("AT") {
+                            MatchPattern::Wildcard(None)
+                        } else if parser.check_kind(TokenType::Number) {
+                            let val_ast = parser.parse_rule("NumExpr")?;
+                            if let Ast::Value(val) = val_ast {
+                                MatchPattern::Value(val)
+                            } else {
+                                unreachable!()
+                            }
+                        } else if parser.check_kind(TokenType::String) {
+                            let val_ast = parser.parse_rule("StringExpr")?;
+                            if let Ast::Value(val) = val_ast {
+                                MatchPattern::Value(val)
+                            } else {
+                                unreachable!()
+                            }
+                        } else if parser.check_keyword("TRUE") {
+                            parser.advance()?;
+                            MatchPattern::Value(Value::Bool(true))
+                        } else if parser.check_keyword("FALSE") {
+                            parser.advance()?;
+                            MatchPattern::Value(Value::Bool(false))
+                        } else if parser.check_kind(TokenType::Identifier) {
+                            let ident = parser.advance()?;
+                            if ident.lexeme == "_" {
+                                MatchPattern::Wildcard(None)
+                            } else if parser.match_operator("DOUBLE_COLON") {
+                                let tag = parser.expect_kind(TokenType::Identifier)?.lexeme;
+                                let mut fields = Vec::new();
+                                if parser.match_operator("LEFT_PAREN") {
+                                    while !parser.check_operator("RIGHT_PAREN") {
+                                        let field_tok = parser.advance()?;
+                                        fields.push(field_tok.lexeme);
+                                        if !parser.match_operator("COMMA") {
+                                            break;
+                                        }
+                                    }
+                                    parser.expect_operator("RIGHT_PAREN")?;
+                                }
+                                MatchPattern::Enum {
+                                    name: ident.lexeme,
+                                    tag,
+                                    fields,
+                                }
+                            } else {
+                                MatchPattern::Wildcard(Some(ident.lexeme))
+                            }
+                        } else {
+                            return Err(ParserError::TokenMismatch(
+                                Token {
+                                    kind: TokenType::Identifier,
+                                    lexeme: "pattern".to_string(),
+                                    span: Span { line: 0, column: 0 },
+                                },
+                                parser.peek()?,
+                            ));
+                        };
+
+                        parser.expect_operator("ARROW_LEFT")?;
+
+                        let body = parser.parse()?;
+
+                        parser.match_operator("COMMA");
+                        parser.match_operator("SEMICOLON");
+
+                        arms.push(MatchArm {
+                            pattern,
+                            body: Box::new(body),
+                        });
+                    }
+
+                    parser.expect_operator("RIGHT_BRACE")?;
+
+                    Ok(Ast::Match {
+                        target: Box::new(target),
+                        arms,
+                    })
                 }),
             },
             ParserRule {

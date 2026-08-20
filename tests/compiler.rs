@@ -516,4 +516,49 @@ mod tests {
             ],
         );
     }
+
+    #[test]
+    fn check_compile_match_enum() {
+        use parts::parser::{EnumVariant, MatchArm, MatchPattern};
+        let mut c = Compiler::new("./".into());
+        let ast = vec![
+            Ast::EnumDef {
+                name: "Direction".to_string(),
+                variants: vec![
+                    EnumVariant {
+                        name: "North".to_string(),
+                        fields: vec!["power".to_string()],
+                    },
+                ],
+            },
+            Ast::Declare {
+                name: "d".to_string(),
+                value: Box::new(Ast::Value(ParserValue::EnumField {
+                    name: "Direction".to_string(),
+                    tag: "North".to_string(),
+                    fields: vec![Ast::Value(ParserValue::Int(100))],
+                })),
+            },
+            Ast::Match {
+                target: Box::new(Ast::Value(ParserValue::Ref("d".to_string()))),
+                arms: vec![
+                    MatchArm {
+                        pattern: MatchPattern::Enum {
+                            name: "Direction".to_string(),
+                            tag: "North".to_string(),
+                            fields: vec!["p".to_string()],
+                        },
+                        body: Box::new(Ast::Value(ParserValue::Ref("p".to_string()))),
+                    },
+                    MatchArm {
+                        pattern: MatchPattern::Wildcard(None),
+                        body: Box::new(Ast::Value(ParserValue::Int(0))),
+                    },
+                ],
+            },
+        ];
+
+        let ir = c.compile_all(ast).expect("compilation failed");
+        assert!(ir.iter().any(|op| matches!(op, IrOp::MatchEnum { .. })));
+    }
 }

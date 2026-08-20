@@ -33,7 +33,8 @@ define_opcodes! {
     GetPropertyDyn = 0x23,
     SetPropertyDyn = 0x24,
     LoadNative  = 0x25,
-    LoadGlobal  = 0x26
+    LoadGlobal  = 0x26,
+    MatchEnum   = 0x27
 }
 
 impl Emitter {
@@ -94,6 +95,7 @@ impl Emitter {
                 tag: _,
                 args,
             } => 6 + 9 * args.len() as i64,
+            IrOp::MatchEnum { .. } => 5,
         }
     }
 
@@ -275,6 +277,18 @@ impl Emitter {
                         buff.extend_from_slice(&arg.0.to_le_bytes());
                         buff.push(arg.1);
                     }
+                }
+                IrOp::MatchEnum {
+                    dest,
+                    src,
+                    enum_idx,
+                    tag,
+                } => {
+                    buff.push(OpCode::MatchEnum as u8);
+                    buff.push(dest);
+                    buff.push(src);
+                    buff.push(enum_idx);
+                    buff.push(tag);
                 }
             }
         }
