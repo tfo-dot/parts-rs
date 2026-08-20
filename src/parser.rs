@@ -67,7 +67,7 @@ impl Parser {
 
             let tmp = self.parse()?;
 
-            if tmp != Ast::Ignore {
+            if tmp != Ast::Ignore && !matches!(tmp, Ast::Value(Value::String(_))) {
                 buf.push(tmp);
             }
         }

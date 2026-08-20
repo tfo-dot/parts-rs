@@ -561,4 +561,30 @@ mod tests {
         let ir = c.compile_all(ast).expect("compilation failed");
         assert!(ir.iter().any(|op| matches!(op, IrOp::MatchEnum { .. })));
     }
+
+    #[test]
+    fn check_comments_removed_from_const_pool() {
+        use parts::parser::Parser;
+        let source = r#"
+            "Module documentation comment"
+            let a = "actual string 1";
+            let add(x) = {
+                "Inside function doc"
+                return x;
+            }
+            "End of file comment"
+        "#;
+        let mut p = Parser::new(source.to_string());
+        let ast = p.parse_all().unwrap();
+        let mut c = Compiler::new("./".into());
+        let _ = c.compile_all(ast).unwrap();
+
+        for val in &c.constant_pool {
+            if let Value::String(s) = val {
+                assert_ne!(s.as_str(), "Module documentation comment");
+                assert_ne!(s.as_str(), "Inside function doc");
+                assert_ne!(s.as_str(), "End of file comment");
+            }
+        }
+    }
 }

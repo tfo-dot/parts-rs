@@ -404,7 +404,7 @@ impl ParserRule {
                         }
 
                         let temp = parser.parse()?;
-                        if temp != Ast::Ignore {
+                        if temp != Ast::Ignore && !matches!(temp, Ast::Value(Value::String(_))) {
                             body.push(temp);
                         }
                     }

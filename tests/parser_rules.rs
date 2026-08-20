@@ -98,10 +98,7 @@ mod tests {
         let mut p = Parser::new("`x`".to_string());
         let res = p.parse_all();
 
-        assert_eq!(
-            res.unwrap(),
-            vec![Ast::Value(Value::String("x".to_string()))]
-        );
+        assert_eq!(res.unwrap(), vec![]);
     }
 
     #[test]
