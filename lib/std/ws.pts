@@ -381,7 +381,21 @@ let connect_wss(host, path) {
 }
 
 let connect_ws(host, port, path) {
-    let addr = __joinStr(host, __joinStr(":", port.to_string().unwrap_or("80")));
+    let port_str = ":80";
+    if port == 80 {
+        port_str = ":80";
+    } else {
+        if port == 8080 {
+            port_str = ":8080";
+        } else {
+            if port == 9001 {
+                port_str = ":9001";
+            } else {
+                port_str = __joinStr(":", port);
+            }
+        }
+    }
+    let addr = __joinStr(host, port_str);
     let sock_res = __net_tcp_connect(addr);
     if sock_res.is_err() {
         return Result::Err(sock_res.unwrap_err());

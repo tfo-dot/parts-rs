@@ -3,6 +3,7 @@ use std::{
     cell::RefCell,
     io::{Read, Write},
     net::TcpStream,
+    os::unix::net::UnixStream,
     process::Command,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
@@ -13,6 +14,7 @@ use std::{
 enum SocketStream {
     Tcp(TcpStream),
     Tls(native_tls::TlsStream<TcpStream>),
+    Unix(UnixStream),
 }
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
@@ -25,7 +27,7 @@ fn get_sockets() -> &'static Mutex<FxHashMap<u64, SocketStream>> {
 use crate::value::{NativeFunction, Value};
 use parts_macros::native_function;
 
-#[native_function(arity = 1)]
+#[native_function]
 pub fn println(args: Vec<Value>) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
@@ -35,7 +37,7 @@ pub fn println(args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Bool(true))
 }
 
-#[native_function(arity = 1)]
+#[native_function]
 pub fn print(args: Vec<Value>) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
@@ -1822,6 +1824,34 @@ pub fn tls_connect(host: Value, port: Value) -> Result<Value, String> {
     raw_net_tls_connect(host, port)
 }
 
+fn raw_net_unix_connect(path: Value) -> Result<Value, String> {
+    let path_str = match path {
+        Value::String(s) => s.to_string(),
+        _ => return Ok(Value::err("Expected string path for unix_connect")),
+    };
+
+    match UnixStream::connect(&path_str) {
+        Ok(stream) => {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+            let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+            get_sockets().lock().unwrap().insert(id, SocketStream::Unix(stream));
+            Ok(Value::ok(Value::Int(id as i64)))
+        }
+        Err(e) => Ok(Value::err(Value::String(format!("Failed to connect to UNIX socket {}: {}", path_str, e).into()))),
+    }
+}
+
+#[native_function]
+pub fn __net_unix_connect(path: Value) -> Result<Value, String> {
+    raw_net_unix_connect(path)
+}
+
+#[native_function]
+pub fn unix_connect(path: Value) -> Result<Value, String> {
+    raw_net_unix_connect(path)
+}
+
 fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
     let id = match socket_id {
         Value::Int(i) if i > 0 => i as u64,
@@ -1842,6 +1872,7 @@ fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
     let read_res = match stream {
         SocketStream::Tcp(s) => s.read(&mut buf),
         SocketStream::Tls(s) => s.read(&mut buf),
+        SocketStream::Unix(s) => s.read(&mut buf),
     };
 
     match read_res {
@@ -1884,6 +1915,7 @@ fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
     let write_res = match stream {
         SocketStream::Tcp(s) => s.write_all(&bytes).and_then(|_| s.flush()),
         SocketStream::Tls(s) => s.write_all(&bytes).and_then(|_| s.flush()),
+        SocketStream::Unix(s) => s.write_all(&bytes).and_then(|_| s.flush()),
     };
 
     match write_res {
@@ -1913,6 +1945,7 @@ fn raw_net_close(socket_id: Value) -> Result<Value, String> {
         match stream {
             SocketStream::Tcp(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }
             SocketStream::Tls(mut s) => { let _ = s.shutdown(); }
+            SocketStream::Unix(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }
         }
         Ok(Value::ok(Value::Bool(true)))
     } else {
@@ -1929,6 +1962,7 @@ pub fn __net_close(socket_id: Value) -> Result<Value, String> {
 pub fn net_close(socket_id: Value) -> Result<Value, String> {
     raw_net_close(socket_id)
 }
+
 
 #[derive(Clone)]
 pub struct StdModule {
@@ -2062,16 +2096,17 @@ impl StdModule {
             sec_websocket_accept(),
             __net_tcp_connect(),
             __net_tls_connect(),
+            __net_unix_connect(),
             __net_read(),
             __net_write(),
             __net_close(),
             tcp_connect(),
             tls_connect(),
+            unix_connect(),
             net_read(),
             net_write(),
             net_close(),
         ];
-        
         if let Some(extra) = EXTRA_NATIVES.get() {
             if let Ok(guard) = extra.lock() {
                 functions.extend((*guard).clone());

@@ -238,6 +238,7 @@ impl ScannerRule {
                                 'n' => unescaped.push('\n'),
                                 't' => unescaped.push('\t'),
                                 'r' => unescaped.push('\r'),
+                                '0' => unescaped.push('\0'),
                                 'b' => unescaped.push('\x08'),
                                 'f' => unescaped.push('\x0C'),
                                 _ => return Err(ScannerError::InvalidEscape),

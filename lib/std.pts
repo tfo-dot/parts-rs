@@ -23,5 +23,11 @@ return |>
     Ok: __result_ok,
     Err: __result_err,
     Some: __option_some,
-    None: __option_none
+    None: __option_none,
+    tcp_connect: __net_tcp_connect,
+    tls_connect: __net_tls_connect,
+    unix_connect: __net_unix_connect,
+    net_read: __net_read,
+    net_write: __net_write,
+    net_close: __net_close
 <|;

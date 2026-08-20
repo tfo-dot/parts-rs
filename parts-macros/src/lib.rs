@@ -41,8 +41,9 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Check if it's a "raw" function: fn(args: Vec<Value>)
     let is_raw = if sig_args.len() == 1 {
         if let FnArg::Typed(pat_type) = &sig_args[0] {
-            if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                pat_ident.ident == "args"
+            if let syn::Type::Path(type_path) = &*pat_type.ty {
+                let seg = &type_path.path.segments.last().unwrap().ident;
+                seg == "Vec"
             } else {
                 false
             }
@@ -54,7 +55,16 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let wrapper_body = if is_raw {
-        quote! { #body }
+        if let Some(expected_arity) = attr.arity {
+            quote! {
+                if args.len() != #expected_arity as usize {
+                    return Err(format!("Expected {} arguments, got {}", #expected_arity, args.len()));
+                }
+                #body
+            }
+        } else {
+            quote! { #body }
+        }
     } else {
         let arg_extractions = sig_args.iter().enumerate().map(|(i, arg)| {
             if let FnArg::Typed(pat_type) = arg {
@@ -70,7 +80,6 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote! {}
             }
         });
-
         quote! {
             if args.len() != #arity as usize {
                 return Err(format!("Expected {} arguments, got {}", #arity, args.len()));
