@@ -1,14 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use parts::parser::{Ast, Parser, Value};
+    use parts::parser::{Ast, EnumVariant, Parser, Value};
 
     #[test]
     fn test_semicolon() {
         let mut p = Parser::new(";".to_string());
 
         let res = p.parse_all();
-
-        assert!(res.is_ok());
 
         let val = res.unwrap();
 
@@ -19,7 +17,6 @@ mod tests {
     fn test_object_empty() {
         let mut p = Parser::new("|> <|".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         let val = res.unwrap();
 
@@ -28,10 +25,7 @@ mod tests {
         if let Some(Ast::Object(inner_obj)) = val.first() {
             assert_eq!(inner_obj.len(), 0);
         } else {
-            panic!(
-                "Expected Ast::Object at 0, got {:?}",
-                val.first()
-            );
+            panic!("Expected Ast::Object at 0, got {:?}", val.first());
         }
     }
 
@@ -39,7 +33,6 @@ mod tests {
     fn test_object_one_entry() {
         let mut p = Parser::new("|> expectFalse: false <|".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         let val = res.unwrap();
         assert_eq!(val.len(), 1);
@@ -47,13 +40,13 @@ mod tests {
         if let Some(Ast::Object(inner_obj)) = val.first() {
             assert_eq!(
                 inner_obj.clone(),
-                vec![(Ast::Value(Value::Ref("expectFalse".to_string())), Ast::Value(Value::Bool(false)))]
+                vec![(
+                    Ast::Value(Value::Ref("expectFalse".to_string())),
+                    Ast::Value(Value::Bool(false))
+                )]
             );
         } else {
-            panic!(
-                "Expected Ast::Object at 0, got {:?}",
-                val.first()
-            );
+            panic!("Expected Ast::Object at 0, got {:?}", val.first());
         }
     }
 
@@ -61,7 +54,6 @@ mod tests {
     fn test_object_two_entries() {
         let mut p = Parser::new("|> expectFalse: false, expectTrue: true <|".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         let val = res.unwrap();
         assert_eq!(val.len(), 1);
@@ -70,15 +62,18 @@ mod tests {
             assert_eq!(
                 inner_obj.clone(),
                 vec![
-                    (Ast::Value(Value::Ref("expectFalse".to_string())), Ast::Value(Value::Bool(false))),
-                    (Ast::Value(Value::Ref("expectTrue".to_string())), Ast::Value(Value::Bool(true)))
+                    (
+                        Ast::Value(Value::Ref("expectFalse".to_string())),
+                        Ast::Value(Value::Bool(false))
+                    ),
+                    (
+                        Ast::Value(Value::Ref("expectTrue".to_string())),
+                        Ast::Value(Value::Bool(true))
+                    )
                 ]
             );
         } else {
-            panic!(
-                "Expected Ast::Object at 0, got {:?}",
-                val.first()
-            );
+            panic!("Expected Ast::Object at 0, got {:?}", val.first());
         }
     }
 
@@ -86,7 +81,6 @@ mod tests {
     fn test_group() {
         let mut p = Parser::new("(false)".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(false))]);
     }
@@ -95,7 +89,6 @@ mod tests {
     fn test_var() {
         let mut p = Parser::new("x".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Ref("x".to_string()))]);
     }
@@ -104,7 +97,6 @@ mod tests {
     fn test_string() {
         let mut p = Parser::new("`x`".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -116,7 +108,6 @@ mod tests {
     fn test_number() {
         let mut p = Parser::new("0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Int(0))]);
     }
@@ -125,7 +116,6 @@ mod tests {
     fn test_decimal() {
         let mut p = Parser::new("0.1".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Double(0.1))]);
     }
@@ -134,7 +124,6 @@ mod tests {
     fn test_false() {
         let mut p = Parser::new("false".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(false))]);
     }
@@ -143,7 +132,6 @@ mod tests {
     fn test_true() {
         let mut p = Parser::new("true".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Value(Value::Bool(true))]);
     }
@@ -152,7 +140,6 @@ mod tests {
     fn test_continue() {
         let mut p = Parser::new("continue".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::ContinueCode]);
     }
@@ -161,7 +148,6 @@ mod tests {
     fn test_break() {
         let mut p = Parser::new("break".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::BreakCode]);
     }
@@ -170,7 +156,6 @@ mod tests {
     fn test_return_no_value() {
         let mut p = Parser::new("return;".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -184,7 +169,6 @@ mod tests {
     fn test_return_with_value() {
         let mut p = Parser::new("return 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -193,12 +177,11 @@ mod tests {
             }]
         );
     }
-    
+
     #[test]
     fn test_block_empty() {
         let mut p = Parser::new("{}".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Ast::Block { code: vec![] }]);
     }
@@ -207,7 +190,6 @@ mod tests {
     fn test_block_with_code() {
         let mut p = Parser::new("{ return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -223,7 +205,6 @@ mod tests {
     fn test_for() {
         let mut p = Parser::new("for true { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -242,7 +223,6 @@ mod tests {
     fn test_for_without_braces() {
         let mut p = Parser::new("for true return 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -259,7 +239,6 @@ mod tests {
     fn test_for_each() {
         let mut p = Parser::new("for x in y { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -279,7 +258,6 @@ mod tests {
     fn test_if() {
         let mut p = Parser::new("if true { return 0 } else {return 1}".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -303,7 +281,6 @@ mod tests {
     fn test_if_no_else() {
         let mut p = Parser::new("if true { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -323,7 +300,6 @@ mod tests {
     fn test_fun_no_arguments_short() {
         let mut p = Parser::new("fun () = 0;".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -340,7 +316,6 @@ mod tests {
     fn test_fun_no_arguments() {
         let mut p = Parser::new("fun () {return 0}".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -359,7 +334,6 @@ mod tests {
     fn test_fun_one_argument_short() {
         let mut p = Parser::new("fun (x) = 0;".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -376,7 +350,6 @@ mod tests {
     fn test_fun_one_argument() {
         let mut p = Parser::new("fun (x) {return 0}".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -395,7 +368,6 @@ mod tests {
     fn test_fun_two_arguments_short() {
         let mut p = Parser::new("fun (x, y) = 0;".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -412,7 +384,6 @@ mod tests {
     fn test_fun_two_arguments() {
         let mut p = Parser::new("fun (x, y) {return 0}".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -431,7 +402,6 @@ mod tests {
     fn test_let() {
         let mut p = Parser::new("let x = 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -446,7 +416,6 @@ mod tests {
     fn test_let_function_no_args_short() {
         let mut p = Parser::new("let x() = 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -466,7 +435,6 @@ mod tests {
     fn test_let_function_no_args() {
         let mut p = Parser::new("let x() { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -488,7 +456,6 @@ mod tests {
     fn test_let_function_one_arg_short() {
         let mut p = Parser::new("let x(x) = 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -508,7 +475,6 @@ mod tests {
     fn test_let_function_one_arg() {
         let mut p = Parser::new("let x(x) { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -530,7 +496,6 @@ mod tests {
     fn test_let_function_two_args_short() {
         let mut p = Parser::new("let x(x, y) = 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -550,7 +515,6 @@ mod tests {
     fn test_let_function_two_args() {
         let mut p = Parser::new("let x(x, y) { return 0 }".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -566,5 +530,109 @@ mod tests {
                 }))
             }]
         );
+    }
+
+    #[test]
+    fn test_enum_declaration_no_variants() {
+        let mut p = Parser::new("enum A".to_string());
+        let res = p.parse_all();
+        println!("{:?}", res);
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![],
+            }]
+        )
+    }
+
+    #[test]
+    fn test_enum_declaration_no_variants_other() {
+        let mut p = Parser::new("enum A {}".to_string());
+        let res = p.parse_all();
+        println!("{:?}", res);
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![],
+            }]
+        )
+    }
+
+    #[test]
+    fn test_enum_declaration_one_variant() {
+        let mut p = Parser::new("enum A { A }".to_string());
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![EnumVariant {
+                    name: "A".to_string(),
+                    fields: vec![],
+                }],
+            }]
+        )
+    }
+
+    #[test]
+    fn test_enum_declaration_one_variant_with_fields() {
+        let mut p = Parser::new("enum A { A(A, B) }".to_string());
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![EnumVariant {
+                    name: "A".to_string(),
+                    fields: vec!["A".to_string(), "B".to_string()],
+                }],
+            }]
+        )
+    }
+
+    #[test]
+    fn test_enum_declaration_one_variant_with_field() {
+        let mut p = Parser::new("enum A { A(A) }".to_string());
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![EnumVariant {
+                    name: "A".to_string(),
+                    fields: vec!["A".to_string()],
+                }],
+            }]
+        )
+    }
+
+    #[test]
+    fn test_enum_declaration_multiplee_variants_with_fields() {
+        let mut p = Parser::new("enum A {A(A), B(A)}".to_string());
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![Ast::EnumDef {
+                name: "A".to_string(),
+                variants: vec![
+                    EnumVariant {
+                        name: "A".to_string(),
+                        fields: vec!["A".to_string()],
+                    },
+                    EnumVariant {
+                        name: "B".to_string(),
+                        fields: vec!["A".to_string()],
+                    }
+                ],
+            }]
+        )
     }
 }

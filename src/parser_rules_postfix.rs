@@ -331,6 +331,39 @@ impl PostfixRule {
                     Ok(Ast::Ignore)
                 }),
             },
+            PostfixRule {
+                id: "EnumFieldExpr".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("DOUBLE_COLON")),
+                parse: Arc::new(|parser, ast| {
+                    if let Ast::Value(v) = ast {
+                        if let Value::Ref(name) = v {
+                            let tag = parser.expect_kind(TokenType::Identifier)?.lexeme;
+
+                            let mut fields = vec![];
+
+                            if parser.check_operator("LEFT_PAREN") {
+                                let _ = parser.advance();
+                                loop {
+                                    fields.push(parser.parse()?);
+
+                                    if !parser.match_operator("COMMA") {
+                                        break;
+                                    }
+                                }
+
+                                parser.expect_operator("RIGHT_PAREN")?;
+                            }
+
+                            Ok(Ast::Value(Value::EnumField { name, tag, fields }))
+                        } else {
+                            return Err(ParserError::RuleNotFound);
+                        }
+                    } else {
+                        return Err(ParserError::RuleNotFound);
+                    }
+                }),
+            },
         ]
     }
 }

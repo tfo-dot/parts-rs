@@ -41,7 +41,10 @@ fn main() {
 
     let mut vm = VM::new(res.code, res.consts);
 
-    let res = vm.run().expect("Got error vm lol");
+    let res = vm
+        .run()
+        .inspect_err(|e| println!("{:?} at {:04}", e, vm.frames.last().expect("msg").ip))
+        .expect("msg");
 
     if cli.timed {
         println!("Execution took: {:?} ", start_time_e.elapsed());
@@ -63,10 +66,27 @@ fn get_code(config: Cli) -> CompilerOutput {
         if config.debug {
             println!("Attempting to use the cached version");
         }
+
         let btc = get_bytecode(config.clone());
 
         if config.timed {
             println!("Decoding took: {:?} ", start_time_c.elapsed());
+        }
+
+        if config.debug {
+            println!("Bytecode: {:?}\n", btc.code);
+
+            println!("Consts:");
+
+            for constant in &btc.consts {
+                println!("{:?}", constant);
+            }
+
+            println!();
+
+            disassemble::disassemble(&btc.code, &btc.consts);
+
+            println!();
         }
 
         return btc;

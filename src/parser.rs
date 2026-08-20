@@ -395,6 +395,16 @@ pub enum Ast {
         source: String,
         alias: Option<String>,
     },
+    EnumDef {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
+}
+
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -404,8 +414,7 @@ pub enum ImportType {
     Translation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub enum BinaryOperator {
     Add,
     Minus,
@@ -431,8 +440,16 @@ pub enum Value {
     Bool(bool),
     String(String),
     Ref(String),
-    Fun { args: Vec<String>, body: Box<Ast> },
+    Fun {
+        args: Vec<String>,
+        body: Box<Ast>,
+    },
     Object(Vec<(Value, Value)>),
+    EnumField {
+        name: String,
+        tag: String,
+        fields: Vec<Ast>,
+    },
 }
 
 impl PartialEq for Value {
@@ -447,6 +464,18 @@ impl PartialEq for Value {
                 a1 == a2 && b1 == b2
             }
             (Value::Object(v1), Value::Object(v2)) => v1 == v2,
+            (
+                Value::EnumField {
+                    name: v1_name,
+                    tag: v1_tag,
+                    fields: v1_fields,
+                },
+                Value::EnumField {
+                    name: v2_name,
+                    tag: v2_tag,
+                    fields: v2_fields,
+                },
+            ) => v1_name == v2_name && v1_tag == v2_tag && v1_fields == v2_fields,
             _ => false,
         }
     }
@@ -485,6 +514,11 @@ impl Hash for Value {
             Value::Object(v) => {
                 state.write_u8(6);
                 v.hash(state);
+            }
+            Value::EnumField { name, tag, fields } => {
+                name.as_str().hash(state);
+                tag.as_str().hash(state);
+                fields.hash(state);
             }
         }
     }

@@ -27,7 +27,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct VM {
     pub stack: Vec<Value>,
-    frames: Vec<Frame>,
+    pub frames: Vec<Frame>,
     pub constants: Vec<Value>,
     exit_value: Option<Value>,
     pub patch_table: FxHashMap<u64, FxHashMap<u64, Value>>,
@@ -143,6 +143,26 @@ impl VM {
                             let byte = self.read_byte()? as usize;
                             self.stack[fp + dest] = self.stack[fp + byte].clone();
                         }
+                        OpCode::ConstEnum => {
+                            let enum_idx = self.read_byte()?;
+                            let tag = self.read_byte()?;
+                            let count = self.read_byte()?;
+
+                            let mut args = vec![];
+                            for _ in 0..count {
+                                let raw_key_bytes: [u8; 8] = self.read_n(8)?.try_into().unwrap();
+                                let hash = u64::from_le_bytes(raw_key_bytes);
+
+                                let arg = self.read_byte()?;
+                                args.push((hash, arg));
+                            }
+
+                            self.stack[fp + dest] = Value::EnumField {
+                                const_idx: enum_idx,
+                                tag,
+                                args,
+                            }
+                        }
                         _ => return Err(Error::UnexpectedTypeLoad(value_type)),
                     }
                 }
@@ -173,6 +193,7 @@ impl VM {
                 | OpCode::ConstRef
                 | OpCode::ConstFun
                 | OpCode::ConstObj
+                | OpCode::ConstEnum
                 | OpCode::ConstReg => return Err(Error::UnexpectedType),
                 OpCode::Call => {
                     let dest_reg = self.read_byte()?;
@@ -276,6 +297,20 @@ impl VM {
                             self.patch_table.get(&0).and_then(|p| p.get(&hash))
                         {
                             self.stack[fp + dest] = patched.clone();
+                        } else {
+                            return Err(Error::PropertyNotFound(hash));
+                        }
+                    } else if let Value::EnumField {
+                        const_idx: _,
+                        tag: _,
+                        args,
+                    } = &self.stack[fp + src_idx]
+                    {
+                        let arg = args.iter().position(|a| a.0 == hash);
+
+                        if arg.is_some() {
+                            self.stack[fp + dest] =
+                                self.stack[args[arg.unwrap()].1 as usize].clone()
                         } else {
                             return Err(Error::PropertyNotFound(hash));
                         }
@@ -396,6 +431,7 @@ impl VM {
             Value::Fun { .. } => true,
             Value::NativeFun(_) => true,
             Value::Object(items) => items.borrow().len() > 0,
+            Value::EnumDefinition(_) | Value::EnumField { .. } => false,
         }
     }
 

@@ -14,10 +14,19 @@ pub enum Value {
     Bool(bool),
     String(Rc<String>),
     Ref(Rc<String>),
-    Fun { arity: u8, body: Vec<u8> },
+    Fun {
+        arity: u8,
+        body: Vec<u8>,
+    },
     NativeFun(NativeFunction),
     Object(Rc<RefCell<FxHashMap<u64, Value>>>),
     Hash(u64),
+    EnumDefinition(u8),
+    EnumField {
+        const_idx: u8,
+        tag: u8,
+        args: Vec<(u64, u8)>,
+    },
 }
 
 use std::hash::{Hash, Hasher};
@@ -58,6 +67,20 @@ impl Hash for Value {
             Value::Hash(v) => {
                 state.write_u8(5);
                 v.hash(state);
+            }
+            Value::EnumDefinition(count) => {
+                state.write_u8(6);
+                count.hash(state);
+            }
+            Value::EnumField {
+                const_idx,
+                tag,
+                args,
+            } => {
+                state.write_u8(7);
+                state.write_u8(*const_idx);
+                state.write_u8(*tag);
+                args.iter().collect::<Vec<_>>().hash(state);
             }
         }
     }
@@ -190,6 +213,26 @@ impl Value {
                 buffer.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
                 buffer.extend_from_slice(name_bytes);
             }
+            Value::EnumDefinition(idx) => {
+                buffer.push(8);
+                buffer.push(*idx);
+            }
+            Value::EnumField {
+                const_idx,
+                tag,
+                args,
+            } => {
+                buffer.push(9);
+                buffer.push(*const_idx);
+                buffer.push(*tag);
+
+                buffer.push(args.len() as u8);
+
+                for (k, v) in args {
+                    buffer.extend_from_slice(&k.to_le_bytes());
+                    buffer.push(*v);
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -297,6 +340,42 @@ impl Value {
 
                     values.push(Value::NativeFun(native));
                 }
+                8 => {
+                    idx += 1;
+
+                    let const_idx = raw[idx];
+                    idx += 1;
+
+                    values.push(Value::EnumDefinition(const_idx));
+                }
+                9 => {
+                    idx += 1;
+
+                    let const_idx = raw[idx];
+                    idx += 1;
+
+                    let tag = raw[idx];
+                    idx += 1;
+
+                    let len = raw[idx];
+                    idx += 1;
+
+                    let mut args = vec![];
+
+                    for _ in 0..len {
+                        let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
+                        idx += 8;
+                        let reg = raw[idx];
+                        idx += 1;
+                        args.push((u64::from_le_bytes(bytes), reg));
+                    }
+
+                    values.push(Value::EnumField {
+                        const_idx,
+                        tag,
+                        args,
+                    });
+                }
                 _ => panic!("Unexpected value type at index {}", idx),
             }
 
@@ -363,6 +442,7 @@ impl Display for Value {
             Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
+            Value::EnumDefinition(_) | Value::EnumField { .. } => todo!(),
         }
     }
 }

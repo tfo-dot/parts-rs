@@ -1,5 +1,5 @@
 use crate::{
-    parser::{Ast, Error as ParserError, ImportType, MacroArm, Parser, Value},
+    parser::{Ast, EnumVariant, Error as ParserError, ImportType, MacroArm, Parser, Value},
     scanner::{Span, Token, TokenType},
 };
 use std::{fmt, sync::Arc};
@@ -524,6 +524,55 @@ impl ParserRule {
                     parser.add_macro(macro_name, arms);
 
                     Ok(Ast::Ignore)
+                }),
+            },
+            ParserRule {
+                id: "EnumDefinition".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_keyword("ENUM")),
+                parse: Arc::new(|parser| {
+                    let enum_name = parser.expect_kind(TokenType::Identifier)?;
+                    let mut variants = vec![];
+
+                    if parser.match_operator("LEFT_BRACE") {
+                        loop {
+                            if parser.check_operator("RIGHT_BRACE") {
+                                break;
+                            }
+
+                            let variant_name = parser.expect_kind(TokenType::Identifier)?;
+                            let mut fields = vec![];
+
+                            if parser.match_operator("LEFT_PAREN") {
+                                loop {
+                                    let field_name = parser.expect_kind(TokenType::Identifier)?;
+                                    fields.push(field_name.lexeme);
+
+                                    if !parser.match_operator("COMMA") {
+                                        break;
+                                    }
+                                }
+
+                                parser.expect_operator("RIGHT_PAREN")?;
+                            }
+
+                            variants.push(EnumVariant {
+                                name: variant_name.lexeme,
+                                fields,
+                            });
+
+                            if !parser.match_operator("COMMA") {
+                                break;
+                            }
+                        }
+
+                        parser.expect_operator("RIGHT_BRACE")?;
+                    }
+
+                    return Ok(Ast::EnumDef {
+                        name: enum_name.lexeme,
+                        variants,
+                    });
                 }),
             },
             ParserRule {

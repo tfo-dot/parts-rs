@@ -15,6 +15,7 @@ define_opcodes! {
     ConstFun    = 0x05,
     ConstObj    = 0x06,
     ConstReg    = 0x07,
+    ConstEnum   = 0x08,
 
     // Flow Control
     Return      = 0x10,
@@ -87,6 +88,12 @@ impl Emitter {
             IrOp::Label(_) => 0,
             IrOp::Inc { target: _ } => 2,
             IrOp::Dec { target: _ } => 2,
+            IrOp::LoadEnumField {
+                dest: _,
+                enum_idx: _,
+                tag: _,
+                args: _,
+            } => 5,
         }
     }
 
@@ -249,6 +256,25 @@ impl Emitter {
                 IrOp::Dec { target } => {
                     buff.push(OpCode::Dec as u8);
                     buff.push(target);
+                }
+                IrOp::LoadEnumField {
+                    enum_idx,
+                    tag,
+                    args,
+                    dest,
+                } => {
+                    buff.push(OpCode::Load as u8);
+                    buff.push(dest);
+                    buff.push(OpCode::ConstEnum as u8);
+                    buff.push(enum_idx);
+                    buff.push(tag);
+
+                    buff.push(args.len().try_into().unwrap());
+
+                    for arg in args {
+                        buff.extend_from_slice(&arg.0.to_le_bytes());
+                        buff.push(arg.1);
+                    }
                 }
             }
         }

@@ -53,6 +53,22 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                     println!(" FromReg: {}", code[offset + 3]);
                     offset + 4
                 }
+                OpCode::ConstEnum => {
+                    let args_count = code[offset + 5];
+                    let mut args = vec![];
+
+                    for i in 0..args_count {
+                        args.push(code[offset + 6 + (i as usize) * 9 + 8]);
+                    }
+
+                    println!(
+                        " Enum: {}, tag: {} fields: {:?}",
+                        code[offset + 3],
+                        code[offset + 4],
+                        args
+                    );
+                    offset + 6 + 9* args_count as usize
+                }
 
                 _ => {
                     println!();
@@ -118,7 +134,6 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             println!("{:-12} {:04} (offset: {})", name, target, jump_offset);
             offset + 3
         }
-
         OpCode::JumpNot => {
             let reg = code[offset + 1];
             let jump_offset = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
@@ -203,13 +218,13 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             offset + 3
         }
         OpCode::Inc => {
-            let src = code[offset+1];
+            let src = code[offset + 1];
             println!("{:-12} Src: {:<3}", "INC", src);
 
             offset + 2
         }
         OpCode::Dec => {
-            let src = code[offset+1];
+            let src = code[offset + 1];
             println!("{:-12} Src: {:<3}", "DEC", src);
 
             offset + 2

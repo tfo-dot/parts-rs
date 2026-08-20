@@ -115,6 +115,7 @@ impl ScannerRule {
                     ("^", "BIT_XOR"),
                     ("<<", "LEFT_SHIFT"),
                     (">>", "RIGHT_SHIFT"),
+                    ("::", "DOUBLE_COLON")
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -176,6 +177,7 @@ impl ScannerRule {
                     ("translation", ""),
                     ("in", ""),
                     ("part", ""),
+                    ("enum", "")
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

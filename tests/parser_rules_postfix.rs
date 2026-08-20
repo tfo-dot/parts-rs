@@ -1,12 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use parts::parser::{Ast, BinaryOperator, Parser, Value};
+    use parts::parser::{Ast, BinaryOperator, EnumVariant, Parser, Value};
 
     #[test]
     fn test_dot() {
         let mut p = Parser::new("a.b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -22,7 +21,6 @@ mod tests {
     fn test_arr_index() {
         let mut p = Parser::new("a[b]".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -38,7 +36,6 @@ mod tests {
     fn test_add() {
         let mut p = Parser::new("a + b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -54,7 +51,6 @@ mod tests {
     fn test_minus() {
         let mut p = Parser::new("a - b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -70,7 +66,6 @@ mod tests {
     fn test_multiply() {
         let mut p = Parser::new("a * b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -86,7 +81,6 @@ mod tests {
     fn test_divide() {
         let mut p = Parser::new("a / b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -102,7 +96,6 @@ mod tests {
     fn test_equals() {
         let mut p = Parser::new("a == b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -118,7 +111,6 @@ mod tests {
     fn test_greater_than() {
         let mut p = Parser::new("a > b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -134,7 +126,6 @@ mod tests {
     fn test_greater_than_or_equal() {
         let mut p = Parser::new("a >= b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         let a = Box::new(Ast::Value(Value::Ref("a".to_string())));
         let b = Box::new(Ast::Value(Value::Ref("b".to_string())));
@@ -153,7 +144,6 @@ mod tests {
     fn test_less_than() {
         let mut p = Parser::new("a < b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -169,7 +159,6 @@ mod tests {
     fn test_less_than_or_equal() {
         let mut p = Parser::new("a <= b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         let a = Box::new(Ast::Value(Value::Ref("a".to_string())));
         let b = Box::new(Ast::Value(Value::Ref("b".to_string())));
@@ -188,7 +177,6 @@ mod tests {
     fn test_modulo() {
         let mut p = Parser::new("a % b".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -204,7 +192,6 @@ mod tests {
     fn test_call_no_args() {
         let mut p = Parser::new("a()".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -219,7 +206,6 @@ mod tests {
     fn test_call_one_arg() {
         let mut p = Parser::new("a(1)".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -234,7 +220,6 @@ mod tests {
     fn test_call_two_args() {
         let mut p = Parser::new("a(1,2)".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -249,7 +234,6 @@ mod tests {
     fn test_ufcs_parse() {
         let mut p = Parser::new("a.f(1)".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -268,7 +252,6 @@ mod tests {
     fn test_set() {
         let mut p = Parser::new("x = 0".to_string());
         let res = p.parse_all();
-        assert!(res.is_ok());
 
         assert_eq!(
             res.unwrap(),
@@ -277,5 +260,95 @@ mod tests {
                 value: Box::new(Ast::Value(Value::Int(0)))
             }]
         );
+    }
+
+    #[test]
+    fn test_enum_field_access() {
+        let mut p = Parser::new(
+            "
+            enum A { A };   
+            A::A
+            "
+            .to_string(),
+        );
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![
+                Ast::EnumDef {
+                    name: "A".to_string(),
+                    variants: vec![EnumVariant {
+                        name: "A".to_string(),
+                        fields: vec![],
+                    }],
+                },
+                Ast::Value(Value::EnumField {
+                    name: "A".to_string(),
+                    tag: "A".to_string(),
+                    fields: vec![]
+                })
+            ]
+        )
+    }
+
+    #[test]
+    fn test_enum_field_access_with_field() {
+        let mut p = Parser::new(
+            "
+            enum A { A(a) }   
+            A::A(0)
+            "
+            .to_string(),
+        );
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![
+                Ast::EnumDef {
+                    name: "A".to_string(),
+                    variants: vec![EnumVariant {
+                        name: "A".to_string(),
+                        fields: vec!["a".to_string()],
+                    }],
+                },
+                Ast::Value(Value::EnumField {
+                    name: "A".to_string(),
+                    tag: "A".to_string(),
+                    fields: vec![Ast::Value(Value::Int(0))]
+                })
+            ]
+        )
+    }
+
+    #[test]
+    fn test_enum_field_access_with_fields() {
+        let mut p = Parser::new(
+            "
+            enum A { A(a, b) }   
+            A::A(0, 1)
+            "
+            .to_string(),
+        );
+        let res = p.parse_all();
+
+        assert_eq!(
+            res.unwrap(),
+            vec![
+                Ast::EnumDef {
+                    name: "A".to_string(),
+                    variants: vec![EnumVariant {
+                        name: "A".to_string(),
+                        fields: vec!["a".to_string(), "b".to_string()],
+                    }],
+                },
+                Ast::Value(Value::EnumField {
+                    name: "A".to_string(),
+                    tag: "A".to_string(),
+                    fields: vec![Ast::Value(Value::Int(0)), Ast::Value(Value::Int(1))]
+                })
+            ]
+        )
     }
 }
