@@ -148,20 +148,21 @@ impl VM {
                             let tag = self.read_byte()?;
                             let count = self.read_byte()?;
 
-                            let mut args = vec![];
+                            let mut args = Vec::with_capacity(count as usize);
                             for _ in 0..count {
                                 let raw_key_bytes: [u8; 8] = self.read_n(8)?.try_into().unwrap();
                                 let hash = u64::from_le_bytes(raw_key_bytes);
 
-                                let arg = self.read_byte()?;
-                                args.push((hash, arg));
+                                let arg_reg = self.read_byte()? as usize;
+                                let arg_val = self.stack[fp + arg_reg].clone();
+                                args.push((hash, arg_val));
                             }
 
                             self.stack[fp + dest] = Value::EnumField {
                                 const_idx: enum_idx,
                                 tag,
                                 args,
-                            }
+                            };
                         }
                         _ => return Err(Error::UnexpectedTypeLoad(value_type)),
                     }
@@ -306,11 +307,8 @@ impl VM {
                         args,
                     } = &self.stack[fp + src_idx]
                     {
-                        let arg = args.iter().position(|a| a.0 == hash);
-
-                        if arg.is_some() {
-                            self.stack[fp + dest] =
-                                self.stack[args[arg.unwrap()].1 as usize].clone()
+                        if let Some((_, val)) = args.iter().find(|(h, _)| *h == hash) {
+                            self.stack[fp + dest] = val.clone();
                         } else {
                             return Err(Error::PropertyNotFound(hash));
                         }
@@ -368,6 +366,12 @@ impl VM {
                             .cloned()
                             .expect("Missing property from object");
                         self.stack[fp + target_reg] = value;
+                    } else if let Value::EnumField { args, .. } = &self.stack[fp + obj_reg] {
+                        if let Some((_, val)) = args.iter().find(|(h, _)| *h == runtime_hash) {
+                            self.stack[fp + target_reg] = val.clone();
+                        } else {
+                            return Err(Error::PropertyNotFound(runtime_hash));
+                        }
                     } else {
                         panic!("Runtime Error: Attempted to get property from non-object");
                     }
@@ -431,7 +435,7 @@ impl VM {
             Value::Fun { .. } => true,
             Value::NativeFun(_) => true,
             Value::Object(items) => items.borrow().len() > 0,
-            Value::EnumDefinition(_) | Value::EnumField { .. } => false,
+            Value::EnumDefinition(_) | Value::EnumField { .. } => true,
         }
     }
 

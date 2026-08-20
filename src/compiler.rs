@@ -394,6 +394,9 @@ impl Compiler {
                         vec![]
                     };
                 }
+                ParserValue::EnumField { fields, .. } => {
+                    fields.into_iter().flat_map(|f| self.find_stds(f)).collect()
+                }
                 _ => vec![],
             },
             Ast::Declare { name: _, value } => self.find_stds(*value),
@@ -475,6 +478,16 @@ impl Compiler {
                 let address = self.current().add_local(name);
 
                 match *value {
+                    Ast::Value(ParserValue::EnumField { name, tag, fields }) => {
+                        let (const_idx, tag_idx, args) =
+                            self.compile_enum_field(name, tag, fields);
+                        self.add_inst(IrOp::LoadEnumField {
+                            dest: address,
+                            enum_idx: const_idx,
+                            tag: tag_idx,
+                            args,
+                        });
+                    }
                     Ast::Value(raw) => {
                         let v = self.convert_const(raw.clone());
 
@@ -519,7 +532,8 @@ impl Compiler {
                             | Value::String(_)
                             | Value::NativeFun(_)
                             | Value::Hash(_)
-                            | Value::EnumDefinition(_) => {
+                            | Value::EnumDefinition(_)
+                            | Value::EnumField { .. } => {
                                 let idx = match self.constant_pool.iter().position(|x| x == &v) {
                                     Some(expr) => expr as u8,
                                     None => {
@@ -533,17 +547,6 @@ impl Compiler {
                                     idx: idx,
                                 });
                             }
-
-                            Value::EnumField {
-                                const_idx,
-                                tag,
-                                args,
-                            } => self.add_inst(IrOp::LoadEnumField {
-                                dest: address,
-                                enum_idx: const_idx,
-                                tag,
-                                args,
-                            }),
                         }
                     }
                     _ => {
@@ -559,11 +562,23 @@ impl Compiler {
                 address
             }
             Ast::Value(val) => {
-                if let ParserValue::Ref(ref ref_val) = val {
+                if let ParserValue::EnumField { name, tag, fields } = val {
+                    let reg = self.next_free_address();
+                    let (const_idx, tag_idx, args) =
+                        self.compile_enum_field(name, tag, fields);
+                    self.add_inst(IrOp::LoadEnumField {
+                        dest: reg,
+                        enum_idx: const_idx,
+                        tag: tag_idx,
+                        args,
+                    });
+                    return reg;
+                }
+
+                if let ParserValue::Ref(ref_val) = &val {
                     if let Some(reg) = self.current().resolve_local(ref_val) {
                         return reg;
                     }
-
                     if self.contexts.len() > 1 {
                         if let Some(&global_reg) = self.contexts[0].top_level_names.get(ref_val) {
                             let dest_reg = self.next_free_address();
@@ -634,7 +649,8 @@ impl Compiler {
                     | Value::String(_)
                     | Value::NativeFun(_)
                     | Value::Hash(_)
-                    | Value::EnumDefinition(_) => {
+                    | Value::EnumDefinition(_)
+                    | Value::EnumField { .. } => {
                         let idx = match self.constant_pool.iter().position(|x| x == &v) {
                             Some(expr) => expr as u8,
                             None => {
@@ -648,11 +664,6 @@ impl Compiler {
                             idx: idx,
                         });
                     }
-                    Value::EnumField {
-                        const_idx: _,
-                        tag: _,
-                        args: _,
-                    } => unreachable!(),
                 }
 
                 reg
@@ -660,10 +671,25 @@ impl Compiler {
             Ast::Object(entries) => {
                 let obj_reg = self.next_free_address();
 
-                let is_fully_static = entries
-                    .iter()
-                    .all(|(_, val_ast)| matches!(val_ast, Ast::Value(_)));
-
+                let is_fully_static = entries.iter().all(|(key_ast, val_ast)| {
+                    matches!(
+                        key_ast,
+                        Ast::Value(
+                            ParserValue::Int(_)
+                                | ParserValue::Double(_)
+                                | ParserValue::Bool(_)
+                                | ParserValue::String(_)
+                        )
+                    ) && matches!(
+                        val_ast,
+                        Ast::Value(
+                            ParserValue::Int(_)
+                                | ParserValue::Double(_)
+                                | ParserValue::Bool(_)
+                                | ParserValue::String(_)
+                        )
+                    )
+                });
                 if is_fully_static {
                     let mut static_map = FxHashMap::default();
 
@@ -999,7 +1025,16 @@ impl Compiler {
 
                         let lhs_reg = dest.unwrap_or_else(|| self.current().add_local(name));
 
-                        if let Ast::Value(raw) = *value {
+                        if let Ast::Value(ParserValue::EnumField { name, tag, fields }) = *value {
+                            let (const_idx, tag_idx, args) =
+                                self.compile_enum_field(name, tag, fields);
+                            self.add_inst(IrOp::LoadEnumField {
+                                dest: lhs_reg,
+                                enum_idx: const_idx,
+                                tag: tag_idx,
+                                args,
+                            });
+                        } else if let Ast::Value(raw) = *value {
                             let v = self.convert_const(raw.clone());
 
                             match v {
@@ -1044,7 +1079,8 @@ impl Compiler {
                                 | Value::String(_)
                                 | Value::NativeFun(_)
                                 | Value::Hash(_)
-                                | Value::EnumDefinition(_) => {
+                                | Value::EnumDefinition(_)
+                                | Value::EnumField { .. } => {
                                     let idx = match self.constant_pool.iter().position(|x| x == &v)
                                     {
                                         Some(expr) => expr as u8,
@@ -1059,12 +1095,6 @@ impl Compiler {
                                         idx: idx,
                                     });
                                 }
-
-                                Value::EnumField {
-                                    const_idx: _,
-                                    tag: _,
-                                    args: _,
-                                } => unreachable!(),
                             }
                         } else {
                             let res = self.compile(*value);
@@ -1211,11 +1241,7 @@ impl Compiler {
     }
 
     fn convert_const(&mut self, val: ParserValue) -> Value {
-        if let ParserValue::EnumField { .. } = val {
-            return self.compile_enum_field(val);
-        }
-
-        return match val {
+        match val {
             ParserValue::Int(int) => Value::Int(int),
             ParserValue::Double(dbl) => Value::Double(dbl),
             ParserValue::Bool(bol) => Value::Bool(bol),
@@ -1260,58 +1286,57 @@ impl Compiler {
 
                 Value::Object(Rc::new(RefCell::new(entries_compiled)))
             }
-            ParserValue::EnumField { .. } => unreachable!(),
-        };
+            ParserValue::EnumField { .. } => {
+                unreachable!("EnumField is compiled directly and not via convert_const")
+            }
+        }
     }
 
-    fn compile_enum_field(&mut self, val: ParserValue) -> Value {
-        if let ParserValue::EnumField { name, tag, fields } = val {
-            let idx = self.enums.iter().position(|e| e.name == name);
+    fn compile_enum_field(
+        &mut self,
+        name: String,
+        tag: String,
+        fields: Vec<Ast>,
+    ) -> (u8, u8, Vec<(u64, u8)>) {
+        let idx = self.enums.iter().position(|e| e.name == name);
 
-            if idx.is_none() {
-                panic!("Referencing enum definition that doesn't exist ({})", name)
-            }
-
-            let enum_def = self.enums[idx.unwrap()].clone();
-
-            let tag_idx = enum_def.variants.iter().position(|v| v.name == tag);
-
-            if tag_idx.is_none() {
-                panic!(
-                    "Referencing enum field that doesn't exist ({}::{})",
-                    name, tag
-                )
-            }
-
-            let tag_info = enum_def.variants[tag_idx.unwrap()].clone();
-
-            if tag_info.fields.len() != fields.len() {
-                panic!(
-                    "Expected {} values, got {} in {}::{}",
-                    tag_info.fields.len(),
-                    fields.len(),
-                    name,
-                    tag
-                );
-            }
-
-            let mut arg_map = vec![];
-
-            for i in 0..fields.len() {
-                let field = &fields[i];
-                let field_def = Rc::new(tag_info.fields[i].clone());
-
-                let reg = self.compile(field.clone());
-                arg_map.push((Value::String(field_def).get_hash(), reg));
-            }
-
-            Value::EnumField {
-                const_idx: idx.unwrap() as u8,
-                tag: tag_idx.unwrap() as u8,
-                args: arg_map,
-            }
-        } else {
-            unreachable!("Only ParserValue::EnumField, is a valid type to pass here")
+        if idx.is_none() {
+            panic!("Referencing enum definition that doesn't exist ({})", name)
         }
+
+        let enum_def = self.enums[idx.unwrap()].clone();
+
+        let tag_idx = enum_def.variants.iter().position(|v| v.name == tag);
+
+        if tag_idx.is_none() {
+            panic!(
+                "Referencing enum field that doesn't exist ({}::{})",
+                name, tag
+            )
+        }
+
+        let tag_info = enum_def.variants[tag_idx.unwrap()].clone();
+
+        if tag_info.fields.len() != fields.len() {
+            panic!(
+                "Expected {} values, got {} in {}::{}",
+                tag_info.fields.len(),
+                fields.len(),
+                name,
+                tag
+            );
+        }
+
+        let mut arg_map = vec![];
+
+        for i in 0..fields.len() {
+            let field = &fields[i];
+            let field_def = Rc::new(tag_info.fields[i].clone());
+
+            let reg = self.compile(field.clone());
+            arg_map.push((Value::String(field_def).get_hash(), reg));
+        }
+
+        (idx.unwrap() as u8, tag_idx.unwrap() as u8, arg_map)
     }
 }

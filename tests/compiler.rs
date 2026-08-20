@@ -447,4 +447,73 @@ mod tests {
             ],
         );
     }
+    #[test]
+    fn check_enum_definition_and_load() {
+        use parts::parser::EnumVariant;
+        assert_compile(
+            vec![
+                Ast::EnumDef {
+                    name: "Direction".to_string(),
+                    variants: vec![
+                        EnumVariant {
+                            name: "North".to_string(),
+                            fields: vec!["power".to_string()],
+                        },
+                    ],
+                },
+                Ast::Declare {
+                    name: "d".to_string(),
+                    value: Box::new(Ast::Value(ParserValue::EnumField {
+                        name: "Direction".to_string(),
+                        tag: "North".to_string(),
+                        fields: vec![Ast::Value(ParserValue::Int(100))],
+                    })),
+                },
+            ],
+            vec![
+                IrOp::LoadInt { dest: 1, val: 100 },
+                IrOp::LoadEnumField {
+                    dest: 0,
+                    enum_idx: 0,
+                    tag: 0,
+                    args: vec![(Value::String(Rc::new("power".to_string())).get_hash(), 1)],
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn check_enum_direct_value_and_return() {
+        use parts::parser::EnumVariant;
+        assert_compile(
+            vec![
+                Ast::EnumDef {
+                    name: "Result".to_string(),
+                    variants: vec![
+                        EnumVariant {
+                            name: "Ok".to_string(),
+                            fields: vec!["val".to_string()],
+                        },
+                    ],
+                },
+                Ast::Return {
+                    value: Box::new(Ast::Value(ParserValue::EnumField {
+                        name: "Result".to_string(),
+                        tag: "Ok".to_string(),
+                        fields: vec![Ast::Value(ParserValue::Int(42))],
+                    })),
+                },
+            ],
+            vec![
+                IrOp::LoadInt { dest: 1, val: 42 },
+                IrOp::LoadEnumField {
+                    dest: 0,
+                    enum_idx: 0,
+                    tag: 0,
+                    args: vec![(Value::String(Rc::new("val".to_string())).get_hash(), 1)],
+                },
+                IrOp::Return { value: 0 },
+            ],
+        );
+    }
 }

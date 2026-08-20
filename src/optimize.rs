@@ -100,10 +100,14 @@ impl AstOptimizer {
                 }
             }
             Ast::Value(Value::Fun { body, .. }) => self.collect(body),
+            Ast::Value(Value::EnumField { fields, .. }) => {
+                for f in fields {
+                    self.collect(f);
+                }
+            }
             _ => {}
         }
     }
-
     pub fn optimize(&self, node: &mut Ast) {
         match node {
             Ast::Block { code } => {
@@ -203,6 +207,11 @@ impl AstOptimizer {
                 }
             }
             Ast::Value(Value::Fun { body, .. }) => self.optimize(body),
+            Ast::Value(Value::EnumField { fields, .. }) => {
+                for f in fields.iter_mut() {
+                    self.optimize(f);
+                }
+            }
             _ => {}
         }
 
@@ -280,10 +289,14 @@ impl AstOptimizer {
             Ast::Value(Value::Fun { body, .. }) => {
                 self.substitute(body, arg_map);
             }
+            Ast::Value(Value::EnumField { fields, .. }) => {
+                for f in fields.iter_mut() {
+                    self.substitute(f, arg_map);
+                }
+            }
             _ => {}
         }
     }
-
     fn fold_binary(left: &Ast, right: &Ast, op: &BinaryOperator) -> Option<Ast> {
         if let (Ast::Value(Value::Int(l)), Ast::Value(Value::Int(r))) = (left, right) {
             let res = match op {
@@ -360,7 +373,8 @@ impl IrOptimizer {
                         | IrOp::LoadConst { dest, .. }
                         | IrOp::LoadObject { dest, .. }
                         | IrOp::LoadNative { dest, .. }
-                        | IrOp::LoadFun { dest, .. } => {
+                        | IrOp::LoadFun { dest, .. }
+                        | IrOp::LoadEnumField { dest, .. } => {
                             if *dest == *load_src {
                                 *dest = *final_dest;
                                 merged = true;
@@ -450,6 +464,9 @@ impl IrOptimizer {
                             | IrOp::LoadNative { src, .. }
                             | IrOp::LoadFun { src, .. } => *src == *dest,
                             IrOp::Call { what, args, .. } => *what == *dest || args.contains(dest),
+                            IrOp::LoadEnumField { args, .. } => {
+                                args.iter().any(|(_, reg)| reg == dest)
+                            }
                             _ => false,
                         };
 
@@ -468,7 +485,8 @@ impl IrOptimizer {
                             | IrOp::Binary { dest: d, .. }
                             | IrOp::GetProperty { dest: d, .. }
                             | IrOp::GetPropertyDyn { dest: d, .. }
-                            | IrOp::Call { dest: d, .. } => *d == *dest,
+                            | IrOp::Call { dest: d, .. }
+                            | IrOp::LoadEnumField { dest: d, .. } => *d == *dest,
                             _ => false,
                         };
 
@@ -496,7 +514,8 @@ impl IrOptimizer {
                     | IrOp::Binary { dest, .. }
                     | IrOp::GetProperty { dest, .. }
                     | IrOp::GetPropertyDyn { dest, .. }
-                    | IrOp::Call { dest, .. } => Some(*dest),
+                    | IrOp::Call { dest, .. }
+                    | IrOp::LoadEnumField { dest, .. } => Some(*dest),
                     _ => None,
                 };
 

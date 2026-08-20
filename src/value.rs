@@ -25,7 +25,7 @@ pub enum Value {
     EnumField {
         const_idx: u8,
         tag: u8,
-        args: Vec<(u64, u8)>,
+        args: Vec<(u64, Value)>,
     },
 }
 
@@ -80,7 +80,10 @@ impl Hash for Value {
                 state.write_u8(7);
                 state.write_u8(*const_idx);
                 state.write_u8(*tag);
-                args.iter().collect::<Vec<_>>().hash(state);
+                for (k, v) in args {
+                    k.hash(state);
+                    v.hash(state);
+                }
             }
         }
     }
@@ -230,7 +233,7 @@ impl Value {
 
                 for (k, v) in args {
                     buffer.extend_from_slice(&k.to_le_bytes());
-                    buffer.push(*v);
+                    v.encode(buffer);
                 }
             }
             _ => unreachable!(),
@@ -365,11 +368,11 @@ impl Value {
                     for _ in 0..len {
                         let bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
                         idx += 8;
-                        let reg = raw[idx];
-                        idx += 1;
-                        args.push((u64::from_le_bytes(bytes), reg));
+                        let (vals, next_idx) = Value::decode(raw, true, idx);
+                        idx = next_idx;
+                        let val = vals.into_iter().next().unwrap_or(Value::Int(0));
+                        args.push((u64::from_le_bytes(bytes), val));
                     }
-
                     values.push(Value::EnumField {
                         const_idx,
                         tag,
@@ -442,7 +445,21 @@ impl Display for Value {
             Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
-            Value::EnumDefinition(_) | Value::EnumField { .. } => todo!(),
+            Value::EnumDefinition(idx) => write!(f, "<enum def #{}>", idx),
+            Value::EnumField {
+                const_idx,
+                tag,
+                args,
+            } => {
+                write!(f, "EnumField({}, tag: {}, args: [", const_idx, tag)?;
+                for (i, (_, val)) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "])")
+            }
         }
     }
 }

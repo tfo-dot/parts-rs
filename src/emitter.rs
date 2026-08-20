@@ -92,8 +92,8 @@ impl Emitter {
                 dest: _,
                 enum_idx: _,
                 tag: _,
-                args: _,
-            } => 5,
+                args,
+            } => 6 + 9 * args.len() as i64,
         }
     }
 

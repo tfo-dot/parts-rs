@@ -9,6 +9,4 @@ enum Direction {
 
 let d = Direction::North(100.0);
 
-let p = d.power;
-
-std.println(p)
+std.println(d.power)
