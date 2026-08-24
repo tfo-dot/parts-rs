@@ -6,8 +6,8 @@ use std::{
     os::unix::net::UnixStream,
     process::Command,
     rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
     sync::Mutex,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -45,7 +45,6 @@ pub fn print(args: Vec<Value>) -> Result<Value, String> {
 
     Ok(Value::Bool(true))
 }
-
 
 #[native_function]
 pub fn __timestamp() -> Result<Value, String> {
@@ -224,7 +223,10 @@ pub fn __exec(args: Vec<Value>) -> Result<Value, String> {
                 let err_msg = if !err_s.is_empty() {
                     err_s.to_string()
                 } else {
-                    format!("Command exited with status code: {:?}", output.status.code())
+                    format!(
+                        "Command exited with status code: {:?}",
+                        output.status.code()
+                    )
                 };
                 Ok(Value::err(Value::String(err_msg.into())))
             }
@@ -377,7 +379,6 @@ pub fn strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
     raw_str_strip_suffix(str, suffix)
 }
 
-
 #[native_function]
 pub fn __str_upper(val: Value) -> Result<Value, String> {
     match val {
@@ -485,35 +486,60 @@ fn option_is_none(val: Value) -> Result<Value, String> {
 
 fn unwrap_val(val: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 0, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(v.clone())
             } else {
                 Err("Result::Ok had no value".to_string())
             }
         }
-        Value::EnumField { const_idx: 0, tag: 1, args } => {
-            let err_msg = args.first().map(|(_, v)| v.to_string()).unwrap_or_else(|| "Error".to_string());
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            args,
+        } => {
+            let err_msg = args
+                .first()
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_else(|| "Error".to_string());
             Err(format!("called `unwrap()` on an `Err` value: {}", err_msg))
         }
-        Value::EnumField { const_idx: 1, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 1,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(v.clone())
             } else {
                 Err("Option::Some had no value".to_string())
             }
         }
-        Value::EnumField { const_idx: 1, tag: 1, .. } => {
-            Err("called `unwrap()` on a `None` value".to_string())
-        }
+        Value::EnumField {
+            const_idx: 1,
+            tag: 1,
+            ..
+        } => Err("called `unwrap()` on a `None` value".to_string()),
         _ => Err("called `unwrap()` on non-Result/non-Option value".to_string()),
     }
 }
 
 fn unwrap_or_val(val: Value, default: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 0, tag: 0, args }
-        | Value::EnumField { const_idx: 1, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        }
+        | Value::EnumField {
+            const_idx: 1,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(v.clone())
             } else {
@@ -530,37 +556,71 @@ fn expect_val(val: Value, msg: Value) -> Result<Value, String> {
         _ => format!("{}", msg),
     };
     match val {
-        Value::EnumField { const_idx: 0, tag: 0, args }
-        | Value::EnumField { const_idx: 1, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        }
+        | Value::EnumField {
+            const_idx: 1,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(v.clone())
             } else {
                 Err(format!("{}: value was empty", msg_str))
             }
         }
-        Value::EnumField { const_idx: 0, tag: 1, args } => {
-            let err_msg = args.first().map(|(_, v)| v.to_string()).unwrap_or_else(|| "Error".to_string());
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            args,
+        } => {
+            let err_msg = args
+                .first()
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_else(|| "Error".to_string());
             Err(format!("{}: {}", msg_str, err_msg))
         }
-        Value::EnumField { const_idx: 1, tag: 1, .. } => {
-            Err(format!("{}: None", msg_str))
-        }
-        _ => Err(format!("{}: called expect on non-Result/non-Option value", msg_str)),
+        Value::EnumField {
+            const_idx: 1,
+            tag: 1,
+            ..
+        } => Err(format!("{}: None", msg_str)),
+        _ => Err(format!(
+            "{}: called expect on non-Result/non-Option value",
+            msg_str
+        )),
     }
 }
 
 fn unwrap_err_val(val: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 0, tag: 1, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(v.clone())
             } else {
                 Err("Result::Err had no error content".to_string())
             }
         }
-        Value::EnumField { const_idx: 0, tag: 0, args } => {
-            let val_str = args.first().map(|(_, v)| v.to_string()).unwrap_or_else(|| "".to_string());
-            Err(format!("called `unwrap_err()` on an `Ok` value: {}", val_str))
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        } => {
+            let val_str = args
+                .first()
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_else(|| "".to_string());
+            Err(format!(
+                "called `unwrap_err()` on an `Ok` value: {}",
+                val_str
+            ))
         }
         _ => Err("called `unwrap_err()` on non-Result value".to_string()),
     }
@@ -568,7 +628,11 @@ fn unwrap_err_val(val: Value) -> Result<Value, String> {
 
 fn option_ok_or(val: Value, err: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 1, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 1,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(Value::ok(v.clone()))
             } else {
@@ -581,28 +645,44 @@ fn option_ok_or(val: Value, err: Value) -> Result<Value, String> {
 
 fn result_to_ok(val: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 0, tag: 0, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        } => {
             if let Some((_, v)) = args.first() {
                 Ok(Value::some(v.clone()))
             } else {
                 Ok(Value::none())
             }
         }
-        Value::EnumField { const_idx: 0, tag: 1, .. } => Ok(Value::none()),
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            ..
+        } => Ok(Value::none()),
         _ => Ok(Value::ok(val)),
     }
 }
 
 fn result_to_err(val: Value) -> Result<Value, String> {
     match val {
-        Value::EnumField { const_idx: 0, tag: 1, args } => {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            args,
+        } => {
             if let Some((_, e)) = args.first() {
                 Ok(Value::some(e.clone()))
             } else {
                 Ok(Value::none())
             }
         }
-        Value::EnumField { const_idx: 0, tag: 0, .. } => Ok(Value::none()),
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            ..
+        } => Ok(Value::none()),
         _ => Ok(Value::err(val)),
     }
 }
@@ -806,7 +886,11 @@ fn raw_bytes_len(buf: Value) -> Result<Value, String> {
 fn raw_bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
     let index = match idx {
         Value::Int(i) if i >= 0 => i as usize,
-        _ => return Ok(Value::err("Expected non-negative integer index for bytes_get")),
+        _ => {
+            return Ok(Value::err(
+                "Expected non-negative integer index for bytes_get",
+            ));
+        }
     };
     match buf {
         Value::Bytes(b) => {
@@ -824,7 +908,11 @@ fn raw_bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
 fn raw_bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
     let index = match idx {
         Value::Int(i) if i >= 0 => i as usize,
-        _ => return Ok(Value::err("Expected non-negative integer index for bytes_set")),
+        _ => {
+            return Ok(Value::err(
+                "Expected non-negative integer index for bytes_set",
+            ));
+        }
     };
     let byte_val = match val {
         Value::Int(i) => (i & 0xFF) as u8,
@@ -1736,10 +1824,14 @@ pub fn sec_websocket_accept(key: Value) -> Result<Value, String> {
     raw_sec_websocket_accept(key)
 }
 
+pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunction>>> =
+    std::sync::OnceLock::new();
 
-pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunction>>> = std::sync::OnceLock::new();
-
-pub fn register_extra_native(name: &'static str, arity: u8, call: fn(args: Vec<Value>) -> Result<Value, String>) {
+pub fn register_extra_native(
+    name: &'static str,
+    arity: u8,
+    call: fn(args: Vec<Value>) -> Result<Value, String>,
+) {
     let native = NativeFunction {
         name,
         arity,
@@ -1763,10 +1855,15 @@ fn raw_net_tcp_connect(addr: Value) -> Result<Value, String> {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
             let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
-            get_sockets().lock().unwrap().insert(id, SocketStream::Tcp(stream));
+            get_sockets()
+                .lock()
+                .unwrap()
+                .insert(id, SocketStream::Tcp(stream));
             Ok(Value::ok(Value::Int(id as i64)))
         }
-        Err(e) => Ok(Value::err(Value::String(format!("Failed to connect to {}: {}", addr_str, e).into()))),
+        Err(e) => Ok(Value::err(Value::String(
+            format!("Failed to connect to {}: {}", addr_str, e).into(),
+        ))),
     }
 }
 
@@ -1793,7 +1890,11 @@ fn raw_net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
     let addr = format!("{}:{}", host_str, port_num);
     let tcp_stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
-        Err(e) => return Ok(Value::err(Value::String(format!("TCP connection to {} failed: {}", addr, e).into()))),
+        Err(e) => {
+            return Ok(Value::err(Value::String(
+                format!("TCP connection to {} failed: {}", addr, e).into(),
+            )));
+        }
     };
 
     let _ = tcp_stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -1801,16 +1902,25 @@ fn raw_net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
 
     let connector = match native_tls::TlsConnector::new() {
         Ok(c) => c,
-        Err(e) => return Ok(Value::err(Value::String(format!("Failed to initialize TLS connector: {}", e).into()))),
+        Err(e) => {
+            return Ok(Value::err(Value::String(
+                format!("Failed to initialize TLS connector: {}", e).into(),
+            )));
+        }
     };
 
     match connector.connect(&host_str, tcp_stream) {
         Ok(tls_stream) => {
             let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
-            get_sockets().lock().unwrap().insert(id, SocketStream::Tls(tls_stream));
+            get_sockets()
+                .lock()
+                .unwrap()
+                .insert(id, SocketStream::Tls(tls_stream));
             Ok(Value::ok(Value::Int(id as i64)))
         }
-        Err(e) => Ok(Value::err(Value::String(format!("TLS handshake with {} failed: {}", host_str, e).into()))),
+        Err(e) => Ok(Value::err(Value::String(
+            format!("TLS handshake with {} failed: {}", host_str, e).into(),
+        ))),
     }
 }
 
@@ -1824,7 +1934,8 @@ pub fn tls_connect(host: Value, port: Value) -> Result<Value, String> {
     raw_net_tls_connect(host, port)
 }
 
-fn raw_net_unix_connect(path: Value) -> Result<Value, String> {
+#[native_function]
+pub fn __net_unix_connect(path: Value) -> Result<Value, String> {
     let path_str = match path {
         Value::String(s) => s.to_string(),
         _ => return Ok(Value::err("Expected string path for unix_connect")),
@@ -1835,21 +1946,16 @@ fn raw_net_unix_connect(path: Value) -> Result<Value, String> {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
             let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
-            get_sockets().lock().unwrap().insert(id, SocketStream::Unix(stream));
+            get_sockets()
+                .lock()
+                .unwrap()
+                .insert(id, SocketStream::Unix(stream));
             Ok(Value::ok(Value::Int(id as i64)))
         }
-        Err(e) => Ok(Value::err(Value::String(format!("Failed to connect to UNIX socket {}: {}", path_str, e).into()))),
+        Err(e) => Ok(Value::err(Value::String(
+            format!("Failed to connect to UNIX socket {}: {}", path_str, e).into(),
+        ))),
     }
-}
-
-#[native_function]
-pub fn __net_unix_connect(path: Value) -> Result<Value, String> {
-    raw_net_unix_connect(path)
-}
-
-#[native_function]
-pub fn unix_connect(path: Value) -> Result<Value, String> {
-    raw_net_unix_connect(path)
 }
 
 fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
@@ -1880,7 +1986,9 @@ fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
             buf.truncate(n);
             Ok(Value::ok(Value::bytes(buf)))
         }
-        Err(e) => Ok(Value::err(Value::String(format!("Read error: {}", e).into()))),
+        Err(e) => Ok(Value::err(Value::String(
+            format!("Read error: {}", e).into(),
+        ))),
     }
 }
 
@@ -1894,7 +2002,8 @@ pub fn net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
     raw_net_read(socket_id, max_len)
 }
 
-fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+#[native_function]
+pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
     let id = match socket_id {
         Value::Int(i) if i > 0 => i as u64,
         _ => return Ok(Value::err("Expected integer socket id for net_write")),
@@ -1920,21 +2029,14 @@ fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
 
     match write_res {
         Ok(()) => Ok(Value::ok(Value::Int(bytes.len() as i64))),
-        Err(e) => Ok(Value::err(Value::String(format!("Write error: {}", e).into()))),
+        Err(e) => Ok(Value::err(Value::String(
+            format!("Write error: {}", e).into(),
+        ))),
     }
 }
 
 #[native_function]
-pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
-    raw_net_write(socket_id, data)
-}
-
-#[native_function]
-pub fn net_write(socket_id: Value, data: Value) -> Result<Value, String> {
-    raw_net_write(socket_id, data)
-}
-
-fn raw_net_close(socket_id: Value) -> Result<Value, String> {
+pub fn __net_close(socket_id: Value) -> Result<Value, String> {
     let id = match socket_id {
         Value::Int(i) if i > 0 => i as u64,
         _ => return Ok(Value::err("Expected integer socket id for net_close")),
@@ -1943,26 +2045,21 @@ fn raw_net_close(socket_id: Value) -> Result<Value, String> {
     let mut sockets = get_sockets().lock().unwrap();
     if let Some(stream) = sockets.remove(&id) {
         match stream {
-            SocketStream::Tcp(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }
-            SocketStream::Tls(mut s) => { let _ = s.shutdown(); }
-            SocketStream::Unix(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }
+            SocketStream::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            SocketStream::Tls(mut s) => {
+                let _ = s.shutdown();
+            }
+            SocketStream::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
         }
         Ok(Value::ok(Value::Bool(true)))
     } else {
         Ok(Value::ok(Value::Bool(false)))
     }
 }
-
-#[native_function]
-pub fn __net_close(socket_id: Value) -> Result<Value, String> {
-    raw_net_close(socket_id)
-}
-
-#[native_function]
-pub fn net_close(socket_id: Value) -> Result<Value, String> {
-    raw_net_close(socket_id)
-}
-
 
 #[derive(Clone)]
 pub struct StdModule {
@@ -2102,10 +2199,7 @@ impl StdModule {
             __net_close(),
             tcp_connect(),
             tls_connect(),
-            unix_connect(),
             net_read(),
-            net_write(),
-            net_close(),
         ];
         if let Some(extra) = EXTRA_NATIVES.get() {
             if let Ok(guard) = extra.lock() {

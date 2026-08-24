@@ -202,8 +202,6 @@ impl Value {
         Value::Bytes(Rc::new(RefCell::new(data)))
     }
 
-
-
     pub fn call(&self, args: Vec<Value>, constants: Vec<Value>) -> Result<Option<Value>, String> {
         match self {
             Value::Fun { arity, body } => {

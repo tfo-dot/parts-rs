@@ -314,23 +314,31 @@ mod tests {
     fn test_enum_many_registers_before_enum() {
         // Allocates many local variables (registers) before creating and using enums.
         let engine = Engine::new();
-        let mut source = String::from("
+        let mut source = String::from(
+            "
             enum Direction {
                 North(power)
             }
             let run() {
-        ");
+        ",
+        );
         for i in 0..50 {
             // Generate variable names like va, vb, vc, ..., vba, vbb, ...
-            let name = format!("v_{}_{}", (b'a' + (i % 26) as u8) as char, (b'a' + (i / 26) as u8) as char);
+            let name = format!(
+                "v_{}_{}",
+                (b'a' + (i % 26) as u8) as char,
+                (b'a' + (i / 26) as u8) as char
+            );
             source.push_str(&format!("let {} = {};\n", name, i));
         }
-        source.push_str("
+        source.push_str(
+            "
                 let d = Direction::North(777.0);
                 return d.power;
             }
             return run();
-        ");
+        ",
+        );
         let result = engine.execute(&source).unwrap();
         assert_eq!(result, Some(Value::Double(777.0)));
     }

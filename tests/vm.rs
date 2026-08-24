@@ -137,11 +137,7 @@ mod tests {
         // Load reg 0 with Double 42.0
         // Load reg 1 with ConstEnum(enum 0, tag 0, 1 field: power_hash from reg 0)
         // Return reg 1
-        let mut func_body = vec![
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstDouble as u8,
-        ];
+        let mut func_body = vec![OpCode::Load as u8, 0, OpCode::ConstDouble as u8];
         func_body.extend(42.0f64.to_le_bytes());
         func_body.extend(vec![
             OpCode::Load as u8,
@@ -154,10 +150,7 @@ mod tests {
         ]);
         func_body.extend(power_hash.to_le_bytes());
         func_body.push(0); // reg 0 in callee frame
-        func_body.extend(vec![
-            OpCode::Return as u8,
-            1,
-        ]);
+        func_body.extend(vec![OpCode::Return as u8, 1]);
 
         // Main code (runs at fp = 0):
         // Load reg 0 with func (constant 0)

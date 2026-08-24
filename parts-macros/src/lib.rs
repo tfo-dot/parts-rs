@@ -215,11 +215,11 @@ pub fn parts_native(_attr: TokenStream, item: TokenStream) -> TokenStream {
     for (i, arg) in input_fn.sig.inputs.iter().enumerate() {
         if let syn::FnArg::Typed(pat_type) = arg {
             let pat = &pat_type.pat; // The variable name
-            let ty = &pat_type.ty;   // The variable type
-            
+            let ty = &pat_type.ty; // The variable type
+
             arg_names.push(pat.clone());
             arg_types.push(ty.clone());
-            
+
             // Generate the FromValue extraction logic for this specific argument
             arg_extractors.push(quote! {
                 let #pat = <#ty as ::parts::value::FromValue>::from_value(

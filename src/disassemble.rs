@@ -63,12 +63,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                         args.push(code[offset + 7 + (i as usize) * 9 + 8]);
                     }
 
-                    println!(
-                        " Enum: {}, tag: {} fields: {:?}",
-                        enum_idx,
-                        tag,
-                        args
-                    );
+                    println!(" Enum: {}, tag: {} fields: {:?}", enum_idx, tag, args);
                     offset + 7 + 9 * args_count as usize
                 }
 

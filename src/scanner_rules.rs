@@ -115,7 +115,7 @@ impl ScannerRule {
                     ("^", "BIT_XOR"),
                     ("<<", "LEFT_SHIFT"),
                     (">>", "RIGHT_SHIFT"),
-                    ("::", "DOUBLE_COLON")
+                    ("::", "DOUBLE_COLON"),
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -138,7 +138,10 @@ impl ScannerRule {
             ScannerRule {
                 result: TokenType::Keyword,
                 base_rule: Some(Box::new(|r| {
-                    (*r >= 'a' && *r <= 'z') || (*r >= 'A' && *r <= 'Z') || *r == '_' || (*r >= '0' && *r <= '9')
+                    (*r >= 'a' && *r <= 'z')
+                        || (*r >= 'A' && *r <= 'Z')
+                        || *r == '_'
+                        || (*r >= '0' && *r <= '9')
                 })),
                 rule: None,
                 process: Some(Box::new(|mappings, runs, span| {
@@ -178,7 +181,7 @@ impl ScannerRule {
                     ("in", ""),
                     ("part", ""),
                     ("enum", ""),
-                    ("match", "")
+                    ("match", ""),
                 ]
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

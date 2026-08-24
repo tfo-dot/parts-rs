@@ -1,16 +1,16 @@
-pub mod scanner;
-pub mod scanner_rules;
+pub mod compiler;
+pub mod disassemble;
+pub mod emitter;
+pub mod engine;
+pub mod optimize;
 pub mod parser;
 pub mod parser_rules;
 pub mod parser_rules_postfix;
-pub mod compiler;
-pub mod vm;
-pub mod disassemble;
+pub mod scanner;
+pub mod scanner_rules;
 pub mod std;
-pub mod engine;
 pub mod value;
-pub mod optimize;
-pub mod emitter;
+pub mod vm;
 
 mod utils;
 

@@ -60,5 +60,4 @@ mod tests {
         let result = engine.execute(source).unwrap();
         assert_eq!(result, Some(Value::Int(12)));
     }
-
 }

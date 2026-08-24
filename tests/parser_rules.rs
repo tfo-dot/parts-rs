@@ -668,7 +668,8 @@ mod tests {
     #[test]
     fn test_match_parser_unit_and_block_arm() {
         use parts::parser::{MatchArm, MatchPattern};
-        let mut p = Parser::new("match s { Status::Active => { return 1 }, other => other }".to_string());
+        let mut p =
+            Parser::new("match s { Status::Active => { return 1 }, other => other }".to_string());
         let res = p.parse_all().unwrap();
 
         assert_eq!(

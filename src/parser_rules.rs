@@ -1,5 +1,8 @@
 use crate::{
-    parser::{Ast, EnumVariant, Error as ParserError, ImportType, MacroArm, MatchArm, MatchPattern, Parser, Value},
+    parser::{
+        Ast, EnumVariant, Error as ParserError, ImportType, MacroArm, MatchArm, MatchPattern,
+        Parser, Value,
+    },
     scanner::{Span, Token, TokenType},
 };
 use std::{fmt, sync::Arc};
@@ -314,7 +317,8 @@ impl ParserRule {
                                     tag: ident.lexeme,
                                     fields,
                                 }
-                            } else if ident.lexeme == "Some" && parser.match_operator("LEFT_PAREN") {
+                            } else if ident.lexeme == "Some" && parser.match_operator("LEFT_PAREN")
+                            {
                                 let mut fields = Vec::new();
                                 while !parser.check_operator("RIGHT_PAREN") {
                                     let field_tok = parser.advance()?;

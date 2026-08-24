@@ -28,12 +28,12 @@ macro_rules! impl_binary_op {
 
             fn $method(self, rhs: Self) -> Self::Output {
                 match (self, rhs) {
-                    (Value::Ref(_), _) | (_, Value::Ref(_)) => 
+                    (Value::Ref(_), _) | (_, Value::Ref(_)) =>
                         Err("got reference, expected value".to_string()),
 
                     (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a $op b)),
                     (Value::Double(a), Value::Double(b)) => Ok(Value::Double(a $op b)),
-                    
+
                     (Value::Int(a), Value::Double(b)) => Ok(Value::Double(a as f64 $op b)),
                     (Value::Double(a), Value::Int(b)) => Ok(Value::Double(a $op b as f64)),
 
@@ -76,12 +76,12 @@ macro_rules! impl_bitwise_op {
 
             fn $method(self, rhs: Self) -> Self::Output {
                 match (self, rhs) {
-                    (Value::Ref(_), _) | (_, Value::Ref(_)) => 
+                    (Value::Ref(_), _) | (_, Value::Ref(_)) =>
                         Err("got reference, expected value".to_string()),
 
                     // Czyste liczby całkowite
                     (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a $op b)),
-                    
+
                     // Rzutowanie Double na i64 przed operacją bitową (kluczowe dla wyników z np. math.pow)
                     (Value::Double(a), Value::Double(b)) => Ok(Value::Int((a as i64) $op (b as i64))),
                     (Value::Int(a), Value::Double(b)) => Ok(Value::Int(a $op (b as i64))),

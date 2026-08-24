@@ -57,7 +57,13 @@ impl Scanner {
         for rule in &self.rules {
             if rule.base_rule.is_none() {
                 if rule.valid_chars.contains(&self.peek().unwrap()) {
-                    let res = Self::parse_rule(rule, &mut self.index, &self.source, &mut self.line, &mut self.column)?;
+                    let res = Self::parse_rule(
+                        rule,
+                        &mut self.index,
+                        &self.source,
+                        &mut self.line,
+                        &mut self.column,
+                    )?;
 
                     if rule.skip || res.iter().len() == 0 {
                         return self.get_next();
@@ -77,7 +83,13 @@ impl Scanner {
             }
 
             if rule.base_rule.as_ref().unwrap()(&self.peek().unwrap()) {
-                let res = Self::parse_rule(rule, &mut self.index, &self.source, &mut self.line, &mut self.column)?;
+                let res = Self::parse_rule(
+                    rule,
+                    &mut self.index,
+                    &self.source,
+                    &mut self.line,
+                    &mut self.column,
+                )?;
 
                 if rule.skip || res.iter().len() == 0 {
                     return self.get_next();

@@ -231,7 +231,6 @@ impl VM {
                             let mut args = Vec::new();
                             let current_fp = self.current()?.pointer;
 
-
                             for _ in 0..arg_count {
                                 let arg_reg = self.read_byte()? as usize;
                                 let arg = self.stack[current_fp + arg_reg].clone();
@@ -251,7 +250,15 @@ impl VM {
                         }
                         _ => {
                             let frame_pointer = self.current()?.pointer;
-                            eprintln!("UnexpectedTypeCall in func: dest_reg = {}, fun_reg = {}, func_val = {:?}, fp = {}, stack_slice = {:?}", dest_reg, fun_reg, func_val, frame_pointer, &self.stack[frame_pointer..std::cmp::min(self.stack.len(), frame_pointer + 20)]);
+                            eprintln!(
+                                "UnexpectedTypeCall in func: dest_reg = {}, fun_reg = {}, func_val = {:?}, fp = {}, stack_slice = {:?}",
+                                dest_reg,
+                                fun_reg,
+                                func_val,
+                                frame_pointer,
+                                &self.stack[frame_pointer
+                                    ..std::cmp::min(self.stack.len(), frame_pointer + 20)]
+                            );
                             return Err(Error::UnexpectedTypeCall);
                         }
                     }
@@ -358,11 +365,17 @@ impl VM {
                         };
                         let byte_val = match val {
                             Value::Int(i) => (i & 0xFF) as u8,
-                            _ => panic!("Runtime Error: Value assigned to Bytes index must be integer byte"),
+                            _ => panic!(
+                                "Runtime Error: Value assigned to Bytes index must be integer byte"
+                            ),
                         };
                         let mut b = bytes_ref.borrow_mut();
                         if index < 0 || (index as usize) >= b.len() {
-                            panic!("Runtime Error: Bytes index out of bounds: {} (len {})", index, b.len());
+                            panic!(
+                                "Runtime Error: Bytes index out of bounds: {} (len {})",
+                                index,
+                                b.len()
+                            );
                         }
                         b[index as usize] = byte_val;
                     } else {
@@ -400,7 +413,11 @@ impl VM {
                         let byte_val = {
                             let b = bytes_ref.borrow();
                             if index < 0 || (index as usize) >= b.len() {
-                                panic!("Runtime Error: Bytes index out of bounds: {} (len {})", index, b.len());
+                                panic!(
+                                    "Runtime Error: Bytes index out of bounds: {} (len {})",
+                                    index,
+                                    b.len()
+                                );
                             }
                             b[index as usize] as i64
                         };
@@ -418,11 +435,11 @@ impl VM {
                         Some(Value::Hash(h)) => Value::Hash(*h),
                         _ => panic!("Expected hash constant"),
                     };
-                    let found = self.native_functions
+                    let found = self
+                        .native_functions
                         .iter()
                         .find(|f| {
-                            Value::Hash(Value::String(f.name.to_string().into()).get_hash())
-                                == hash
+                            Value::Hash(Value::String(f.name.to_string().into()).get_hash()) == hash
                         })
                         .unwrap()
                         .clone();

@@ -20,10 +20,7 @@ mod tests {
             Token {
                 kind: TokenType::Operator,
                 lexeme: "AT".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -35,10 +32,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }
@@ -55,10 +49,7 @@ mod tests {
             Token {
                 kind: TokenType::Operator,
                 lexeme: "AT".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -70,10 +61,7 @@ mod tests {
             Token {
                 kind: TokenType::Operator,
                 lexeme: "PLUS".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -85,10 +73,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }
@@ -136,10 +121,7 @@ mod tests {
             Token {
                 kind: TokenType::Number,
                 lexeme: "1".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
     }
@@ -156,10 +138,7 @@ mod tests {
             Token {
                 kind: TokenType::Number,
                 lexeme: "3.14".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
     }
@@ -177,10 +156,7 @@ mod tests {
             Token {
                 kind: TokenType::Keyword,
                 lexeme: "FALSE".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
     }
@@ -197,10 +173,7 @@ mod tests {
             Token {
                 kind: TokenType::Identifier,
                 lexeme: "flse".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
     }
@@ -217,10 +190,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }
@@ -237,10 +207,7 @@ mod tests {
             Token {
                 kind: TokenType::String,
                 lexeme: "".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -252,10 +219,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }
@@ -272,10 +236,7 @@ mod tests {
             Token {
                 kind: TokenType::String,
                 lexeme: "".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -287,10 +248,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }
@@ -307,10 +265,7 @@ mod tests {
             Token {
                 kind: TokenType::String,
                 lexeme: "``".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         );
 
@@ -322,10 +277,7 @@ mod tests {
             Token {
                 kind: TokenType::Special,
                 lexeme: "EOF".to_string(),
-                span: Span {
-                    line: 0,
-                    column: 0
-                }
+                span: Span { line: 0, column: 0 }
             }
         )
     }

@@ -454,12 +454,10 @@ mod tests {
             vec![
                 Ast::EnumDef {
                     name: "Direction".to_string(),
-                    variants: vec![
-                        EnumVariant {
-                            name: "North".to_string(),
-                            fields: vec!["power".to_string()],
-                        },
-                    ],
+                    variants: vec![EnumVariant {
+                        name: "North".to_string(),
+                        fields: vec!["power".to_string()],
+                    }],
                 },
                 Ast::Declare {
                     name: "d".to_string(),
@@ -489,12 +487,10 @@ mod tests {
             vec![
                 Ast::EnumDef {
                     name: "Result".to_string(),
-                    variants: vec![
-                        EnumVariant {
-                            name: "Ok".to_string(),
-                            fields: vec!["val".to_string()],
-                        },
-                    ],
+                    variants: vec![EnumVariant {
+                        name: "Ok".to_string(),
+                        fields: vec!["val".to_string()],
+                    }],
                 },
                 Ast::Return {
                     value: Box::new(Ast::Value(ParserValue::EnumField {
@@ -524,12 +520,10 @@ mod tests {
         let ast = vec![
             Ast::EnumDef {
                 name: "Direction".to_string(),
-                variants: vec![
-                    EnumVariant {
-                        name: "North".to_string(),
-                        fields: vec!["power".to_string()],
-                    },
-                ],
+                variants: vec![EnumVariant {
+                    name: "North".to_string(),
+                    fields: vec!["power".to_string()],
+                }],
             },
             Ast::Declare {
                 name: "d".to_string(),
