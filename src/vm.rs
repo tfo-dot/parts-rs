@@ -24,6 +24,31 @@ pub enum Error {
     NativeFunctionFailed(String),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::FrameUnderflow => write!(f, "call stack underflow"),
+            Error::UnexpectedTypeLoad(op) => write!(f, "unexpected value type for load operation ({:?})", op),
+            Error::UnexpectedTypeCall => write!(f, "attempted to call a non-callable value"),
+            Error::UnexpectedType => write!(f, "unexpected value type for operation"),
+            Error::PropertyNotFound(hash) => write!(f, "property with hash {:#018x} not found", hash),
+            Error::NativeFunctionFailed(msg) => write!(f, "native function failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Error {
+    pub fn to_diagnostic(&self, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+        let mut diag = crate::diagnostic::Diagnostic::error(format!("runtime error: {}", self));
+        if let Some(f) = file {
+            diag = diag.with_file(f);
+        }
+        diag
+    }
+}
+
 #[derive(Clone)]
 pub struct VM {
     pub stack: Vec<Value>,

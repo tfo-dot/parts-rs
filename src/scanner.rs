@@ -20,6 +20,33 @@ pub enum ScannerError {
     UnknownToken(char),
 }
 
+impl std::fmt::Display for ScannerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScannerError::InvalidOperator(op) => write!(f, "invalid operator '{}'", op),
+            ScannerError::UnterminatedString => write!(f, "unterminated string literal"),
+            ScannerError::InvalidEscape => write!(f, "invalid escape sequence in string literal"),
+            ScannerError::UnknownToken(ch) => write!(f, "unexpected character '{}'", ch),
+        }
+    }
+}
+
+impl std::error::Error for ScannerError {}
+
+impl ScannerError {
+    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+        let msg = self.to_string();
+        let mut diag = crate::diagnostic::Diagnostic::error(msg.clone());
+        if let Some(src) = source {
+            diag = diag.with_source(src);
+        }
+        if let Some(f) = file {
+            diag = diag.with_file(f);
+        }
+        diag
+    }
+}
+
 impl Scanner {
     pub fn new(rules: Vec<ScannerRule>, source: String) -> Self {
         Scanner {
@@ -190,6 +217,116 @@ pub struct Token {
     pub kind: TokenType,
     pub lexeme: String,
     pub span: Span,
+}
+
+impl Token {
+    pub fn friendly_operator_name(op: &str) -> &'static str {
+        match op {
+            "PLUS" => "'+'",
+            "MINUS" => "'-'",
+            "SLASH" => "'/'",
+            "STAR" => "'*'",
+            "MOD" => "'%'",
+            "SEMICOLON" => "';'",
+            "COLON" => "':'",
+            "DOUBLE_COLON" => "'::'",
+            "DOT" => "'.'",
+            "COMMA" => "','",
+            "LEFT_PAREN" => "'('",
+            "RIGHT_PAREN" => "')'",
+            "LEFT_BRACE" => "'{'",
+            "RIGHT_BRACE" => "'}'",
+            "LEFT_BRACKET" => "'['",
+            "RIGHT_BRACKET" => "']'",
+            "AT" => "'@'",
+            "BANG" => "'!'",
+            "EQUALS" => "'='",
+            "BIT_AND" => "'&'",
+            "BIT_OR" => "'|'",
+            "BIT_XOR" => "'^'",
+            "OBJ_START" => "'|>'",
+            "OBJ_END" => "'<|'",
+            "EQUALITY" => "'=='",
+            "LESS_THAN" => "'<'",
+            "MORE_THAN" => "'>'",
+            "LESS_EQ" => "'<='",
+            "MORE_EQ" => "'>='",
+            "ARROW_LEFT" => "'=>'",
+            "LEFT_SHIFT" => "'<<'",
+            "RIGHT_SHIFT" => "'>>'",
+            _ => "operator",
+        }
+    }
+
+    pub fn user_friendly_name(&self) -> String {
+        match self.kind {
+            TokenType::Operator => {
+                if self.lexeme.is_empty() {
+                    "operator".to_string()
+                } else {
+                    Self::friendly_operator_name(&self.lexeme).to_string()
+                }
+            }
+            TokenType::Keyword => {
+                if self.lexeme.is_empty() {
+                    "keyword".to_string()
+                } else {
+                    format!("keyword '{}'", self.lexeme)
+                }
+            }
+            TokenType::Identifier => {
+                if self.lexeme.is_empty() {
+                    "identifier".to_string()
+                } else {
+                    format!("identifier '{}'", self.lexeme)
+                }
+            }
+            TokenType::Number => {
+                if self.lexeme.is_empty() {
+                    "number".to_string()
+                } else {
+                    format!("number '{}'", self.lexeme)
+                }
+            }
+            TokenType::String => {
+                if self.lexeme.is_empty() {
+                    "string literal".to_string()
+                } else {
+                    format!("string \"{}\"", self.lexeme)
+                }
+            }
+            TokenType::Special => {
+                if self.lexeme == "EOF" {
+                    "end of file".to_string()
+                } else if self.lexeme.is_empty() {
+                    "special token".to_string()
+                } else {
+                    format!("'{}'", self.lexeme)
+                }
+            }
+            TokenType::Space => "whitespace".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.user_friendly_name())
+    }
+}
+
+impl std::fmt::Display for TokenType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenType::Operator => write!(f, "operator"),
+            TokenType::Number => write!(f, "number"),
+            TokenType::Keyword => write!(f, "keyword"),
+            TokenType::Identifier => write!(f, "identifier"),
+            TokenType::String => write!(f, "string"),
+            TokenType::Space => write!(f, "whitespace"),
+            TokenType::Special => write!(f, "special"),
+        }
+    }
 }
 
 impl PartialEq for Token {

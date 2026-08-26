@@ -17,23 +17,96 @@ use std::{
 use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Parser, Clone)]
-#[command(version, about, long_about = None)]
+#[command(version, about = "Parts programming language runtime & tools", long_about = None)]
 struct Cli {
-    #[arg(short, long, value_name = "DEBUG")]
+    #[arg(short, long, help = "Print debug compiler and VM information")]
     debug: bool,
-    #[arg(short, long, value_name = "SHEBANG")]
+    #[arg(short, long, help = "Skip first line (shebang) of source file")]
     shebang: bool,
-    #[arg(short, long, value_name = "TIMED")]
+    #[arg(short, long, help = "Print phase execution timers")]
     timed: bool,
-    #[arg(short, long, value_name = "CACHED")]
+    #[arg(short, long, help = "Use cached compiled bytecode (.ptc)")]
     cached: bool,
-    #[arg(short, long, value_name = "OPTIMIZE")]
+    #[arg(short, long, help = "Run optimization passes")]
     optimize: bool,
-    input: PathBuf,
+    #[arg(long, help = "Check syntax and report diagnostics without executing")]
+    check: bool,
+    #[arg(long, help = "Disable ANSI colored output")]
+    no_color: bool,
+    #[arg(long, help = "Start Language Server Protocol (LSP) mode")]
+    lsp: bool,
+    #[arg(value_name = "FILE", help = "Input script (.pts) to run or check")]
+    input: Option<PathBuf>,
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    if cli.no_color {
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
+    }
+
+    if cli.lsp {
+        if let Err(e) = parts::lsp::run_stdio_server() {
+            eprintln!("LSP server error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let input_path = match cli.input {
+        Some(ref path) => path.clone(),
+        None => {
+            eprintln!("error: no input file provided (use --help for usage, or --lsp to start language server)");
+            std::process::exit(1);
+        }
+    };
+
+    let raw_path_str = input_path.to_string_lossy().to_string();
+
+    if cli.check {
+        let content = match fs::read_to_string(&input_path) {
+            Ok(c) => {
+                if cli.shebang {
+                    c.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(c)
+                } else {
+                    c
+                }
+            }
+            Err(e) => {
+                parts::diagnostic::Diagnostic::error(format!(
+                    "failed to read '{}': {}",
+                    raw_path_str, e
+                ))
+                .with_file(raw_path_str)
+                .eprint(None, None);
+                std::process::exit(1);
+            }
+        };
+
+        let import_path = input_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let report = parts::tools::LanguageTools::check_with_import_path(
+            &content,
+            Some(&raw_path_str),
+            import_path,
+        );
+
+        if report.has_errors() {
+            report.eprint(Some(&content), Some(&raw_path_str));
+            std::process::exit(1);
+        } else {
+            if !report.is_empty() {
+                report.eprint(Some(&content), Some(&raw_path_str));
+            }
+            println!("Syntax OK: {}", raw_path_str);
+            std::process::exit(0);
+        }
+    }
 
     let res = get_code(cli.clone());
 
@@ -41,20 +114,27 @@ fn main() {
 
     let mut vm = VM::new(res.code, res.consts);
 
-    let res = vm
-        .run()
-        .inspect_err(|e| println!("{:?} at {:04}", e, vm.frames.last().expect("msg").ip))
-        .expect("msg");
+    let run_res = match vm.run() {
+        Ok(val) => val,
+        Err(e) => {
+            let ip = vm.frames.last().map(|f| f.ip).unwrap_or(0);
+            let diag = e
+                .to_diagnostic(Some(&raw_path_str))
+                .with_note(format!("at instruction pointer {:04}", ip));
+            diag.eprint(None, Some(&raw_path_str));
+            std::process::exit(1);
+        }
+    };
 
     if cli.timed {
         println!("Execution took: {:?} ", start_time_e.elapsed());
     }
 
-    if res.is_some() {
+    if let Some(val) = run_res {
         if cli.debug {
-            println!("Output: \n {:?}", res.unwrap())
+            println!("Output: \n {:?}", val);
         } else {
-            println!("{}", res.unwrap())
+            println!("{}", val);
         }
     }
 }
@@ -92,27 +172,45 @@ fn get_code(config: Cli) -> CompilerOutput {
         return btc;
     }
 
-    let raw_path = config.input.clone();
+    let raw_path = config.input.as_ref().unwrap().clone();
 
-    let content = if config.shebang {
-        let content = fs::read_to_string(config.input).unwrap();
-
-        let split = content.split_once("\n").unwrap();
-
-        split.1.to_string()
-    } else {
-        fs::read_to_string(config.input).unwrap()
+    let content = match fs::read_to_string(&raw_path) {
+        Ok(c) => {
+            if config.shebang {
+                c.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(c)
+            } else {
+                c
+            }
+        }
+        Err(e) => {
+            parts::diagnostic::Diagnostic::error(format!(
+                "failed to read '{}': {}",
+                raw_path.display(),
+                e
+            ))
+            .with_file(raw_path.to_string_lossy().to_string())
+            .eprint(None, None);
+            std::process::exit(1);
+        }
     };
 
     if config.debug {
         println!("Code: \n{}\n", content);
     }
 
-    let mut p = Partser::new(content);
+    let mut p = Partser::new(content.clone());
 
     let start_time_p = Instant::now();
 
-    let mut ast = p.parse_all().expect("Got error parser lol");
+    let file_str = raw_path.to_string_lossy().to_string();
+    let mut ast = match p.parse_all() {
+        Ok(ast) => ast,
+        Err(e) => {
+            let diag = e.to_diagnostic(Some(&content), Some(&file_str));
+            diag.eprint(Some(&content), Some(&file_str));
+            std::process::exit(1);
+        }
+    };
 
     if config.timed {
         println!("Parsing took: {:?} ", start_time_p.elapsed());
@@ -156,11 +254,20 @@ fn get_code(config: Cli) -> CompilerOutput {
         println!();
     }
 
-    let mut c = Compiler::new(raw_path.parent().unwrap().to_path_buf());
+    let mut c = Compiler::new(raw_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
 
     let start_time_p = Instant::now();
 
-    let mut ir = c.compile_all(ast).expect("Got error cmp lol");
+    let mut ir = match c.compile_all(ast) {
+        Ok(ir) => ir,
+        Err(errors) => {
+            for err in errors {
+                let diag = err.to_diagnostic(Some(&content), Some(&file_str));
+                diag.eprint(Some(&content), Some(&file_str));
+            }
+            std::process::exit(1);
+        }
+    };
 
     if config.debug && config.optimize {
         println!("Compilation took: {:?} ", start_time_p.elapsed());
@@ -221,9 +328,21 @@ struct BytecodeHeader {
 }
 
 fn get_bytecode(config: Cli) -> CompilerOutput {
-    let source_path = config.input.clone();
-    let cache_path = config.input.with_extension("ptc");
-    let source_content = fs::read(&source_path).expect("Failed to read source");
+    let source_path = config.input.as_ref().unwrap().clone();
+    let cache_path = source_path.with_extension("ptc");
+    let source_content = match fs::read(&source_path) {
+        Ok(c) => c,
+        Err(e) => {
+            parts::diagnostic::Diagnostic::error(format!(
+                "failed to read '{}': {}",
+                source_path.display(),
+                e
+            ))
+            .with_file(source_path.to_string_lossy().to_string())
+            .eprint(None, None);
+            std::process::exit(1);
+        }
+    };
     let current_hash = xxh3_64(&source_content);
 
     if let Ok(mut file) = File::open(&cache_path) {
@@ -269,19 +388,24 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
     }
 
     let content = if config.shebang {
-        let str_content = String::from_utf8(source_content).expect("Can't read utf8 contents");
-
-        let split = str_content.split_once("\n").unwrap();
-
-        split.1.to_string()
+        let str_content = String::from_utf8(source_content).unwrap_or_default();
+        let split = str_content.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(str_content);
+        split
     } else {
-        String::from_utf8(source_content).unwrap()
+        String::from_utf8(source_content).unwrap_or_default()
     };
 
-    let mut p = Partser::new(content);
+    let mut p = Partser::new(content.clone());
 
-    let mut ast = p.parse_all().expect("Got error parser lol");
-
+    let file_str = source_path.to_string_lossy().to_string();
+    let mut ast = match p.parse_all() {
+        Ok(ast) => ast,
+        Err(e) => {
+            let diag = e.to_diagnostic(Some(&content), Some(&file_str));
+            diag.eprint(Some(&content), Some(&file_str));
+            std::process::exit(1);
+        }
+    };
     if config.optimize {
         let mut optimizer = AstOptimizer::new();
         optimizer.collect_all(&ast);
@@ -293,9 +417,17 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
         }
     }
 
-    let mut c = Compiler::new(source_path.parent().unwrap().to_path_buf());
-    let mut ir = c.compile_all(ast).expect("Got error cmp lol");
-
+    let mut c = Compiler::new(source_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    let mut ir = match c.compile_all(ast) {
+        Ok(ir) => ir,
+        Err(errors) => {
+            for err in errors {
+                let diag = err.to_diagnostic(Some(&content), Some(&file_str));
+                diag.eprint(Some(&content), Some(&file_str));
+            }
+            std::process::exit(1);
+        }
+    };
     if config.optimize {
         ir = IrOptimizer::optimize(ir);
     }

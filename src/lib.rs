@@ -1,7 +1,9 @@
 pub mod compiler;
 pub mod disassemble;
+pub mod diagnostic;
 pub mod emitter;
 pub mod engine;
+pub mod lsp;
 pub mod optimize;
 pub mod parser;
 pub mod parser_rules;
@@ -10,6 +12,7 @@ pub mod scanner;
 pub mod scanner_rules;
 pub mod std;
 pub mod value;
+pub mod tools;
 pub mod vm;
 
 mod utils;

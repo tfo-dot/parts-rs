@@ -80,17 +80,20 @@ cargo run -- examples/example_script.pts
 ### Command-Line Flags
 
 ```
-Usage: parts [OPTIONS] <INPUT>
+Usage: parts [OPTIONS] [FILE]
 
 Arguments:
-  <INPUT>  Path to the .pts source file
+  [FILE]  Input script (.pts) to run or check
 
 Options:
-  -d, --debug     Display AST, disassembled bytecode, constant pool, and debug info
-  -t, --timed     Display execution time benchmarks (parse, optimize, decode, VM)
-  -s, --shebang   Strip the shebang (#!) from the first line of the script
-  -c, --cached    Load or write compiled bytecode (.ptc) with XXH3 cache invalidation
-  -o, --optimize  Run AST constant folding, inlining, and IR peephole optimizations
+  -d, --debug     Print debug compiler and VM information
+  -s, --shebang   Skip first line (shebang) of source file
+  -t, --timed     Print phase execution timers
+  -c, --cached    Use cached compiled bytecode (.ptc)
+  -o, --optimize  Run optimization passes
+      --check     Check syntax and report diagnostics without executing
+      --no-color  Disable ANSI colored output
+      --lsp       Start Language Server Protocol (LSP) mode
   -h, --help      Print help information
   -V, --version   Print version information
 ```
@@ -109,6 +112,40 @@ println("Hello from a standalone Parts script!");
 chmod +x script.pts
 ./script.pts
 ```
+
+---
+
+## Editor Support, Syntax Highlighting & LSP
+
+Parts provides first-class developer tooling with syntax highlighting packages and a built-in Language Server Protocol (LSP) server in `editors/`.
+
+### 1. Language Server Protocol (`parts --lsp`)
+
+The built-in LSP server provides rich editor features out of the box:
+- **Real-time Diagnostics**: Syntax, scanner, and compiler errors reported with caret positions on-the-fly.
+- **Hover Documentation**: Markdown documentation and signatures for keywords, primitive types (`Int`, `Double`, `Bool`, `String`, `Bytes`), built-ins (`println`, `exec`, `unwrap`, etc.), and user-defined symbols.
+- **Auto-Completion & Snippets**: Contextual completion for keywords, snippets (`fn`, `match`, `enum`, `for in`), built-in variants (`Result::Ok`, `Option::Some`), and `@std/...` modules.
+- **Document Outline & Symbols**: Hierarchical outline of functions, enums, variants, and variables.
+- **Go to Definition**: Jump directly to function, enum, variable, and macro definitions.
+- **Document Formatting**: Code cleanup and trailing whitespace normalization.
+
+To run the language server over `stdio`:
+```bash
+parts --lsp
+```
+
+### 2. Editor Setup
+
+Complete installation packages and setup files are located in the [`editors/`](editors/) directory:
+
+- **VS Code / Cursor / VSCodium**: TextMate grammar and language configuration in [`editors/vscode/`](editors/vscode/).
+- **Neovim / Vim**: Syntax and filetype detection in [`editors/vim/`](editors/vim/), auto-start with `vim.lsp.start({ cmd = { 'parts', '--lsp' } })`.
+- **Helix**: Language definition in [`editors/helix/languages.toml`](editors/helix/languages.toml).
+- **Sublime Text**: YAML syntax in [`editors/sublime/Parts.sublime-syntax`](editors/sublime/Parts.sublime-syntax).
+- **GNU Nano**: Color highlighting in [`editors/nano/parts.nanorc`](editors/nano/parts.nanorc).
+- **Emacs**: Support via `eglot` mapping to `parts --lsp`.
+
+See [**`editors/README.md`**](editors/README.md) for detailed configuration guides for each editor.
 
 ---
 

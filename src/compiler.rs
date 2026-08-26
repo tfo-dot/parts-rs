@@ -22,7 +22,39 @@ pub struct Error {
     pub level: ErrorLevel,
 }
 
-#[derive(Clone, Debug)]
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line > 0 {
+            write!(f, "{}:{}: {}", self.line, self.column, self.message)
+        } else {
+            write!(f, "{}", self.message)
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Error {
+    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+        let level = match self.level {
+            ErrorLevel::Error => crate::diagnostic::DiagnosticLevel::Error,
+            ErrorLevel::Warning => crate::diagnostic::DiagnosticLevel::Warning,
+        };
+        let mut diag = crate::diagnostic::Diagnostic::new(level, &self.message);
+        if self.line > 0 {
+            diag = diag.with_location(self.line, self.column);
+        }
+        if let Some(src) = source {
+            diag = diag.with_source(src);
+        }
+        if let Some(f) = file {
+            diag = diag.with_file(f);
+        }
+        diag
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ErrorLevel {
     Error,
     Warning,
@@ -232,6 +264,7 @@ impl Compiler {
             enums: vec![],
         };
 
+
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
             variants: vec![
@@ -268,6 +301,25 @@ impl Compiler {
         let mut compiler = Self::new(source);
         compiler.std.functions.extend(natives);
         compiler
+    }
+
+    pub fn error(&mut self, line: usize, column: usize, message: impl Into<String>) {
+        self.errors.push(Error {
+            line,
+            column,
+            message: message.into(),
+            level: ErrorLevel::Error,
+        });
+        self.had_error = true;
+    }
+
+    pub fn warning(&mut self, line: usize, column: usize, message: impl Into<String>) {
+        self.errors.push(Error {
+            line,
+            column,
+            message: message.into(),
+            level: ErrorLevel::Warning,
+        });
     }
 
     fn current(&mut self) -> &mut Context {
@@ -324,13 +376,30 @@ impl Compiler {
                 let full_path = self.source.join(&source);
                 let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
                 let path_str = canonical_path.to_str().unwrap().to_string();
-                let content = fs::read_to_string(&canonical_path)
-                    .expect(&format!("Some error with reading import: {}", path_str));
+                let content = match fs::read_to_string(&canonical_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
+                        return Value::Fun {
+                            arity: 0,
+                            body: vec![],
+                        };
+                    }
+                };
                 (content, canonical_path.parent().unwrap().to_path_buf())
             };
 
         let mut p = Parser::new(raw_source);
-        let import_ast = p.parse_all().expect("Got error parser lol");
+        let import_ast = match p.parse_all() {
+            Ok(ast) => ast,
+            Err(e) => {
+                self.error(0, 0, format!("syntax error in imported module '{}': {}", source, e));
+                return Value::Fun {
+                    arity: 0,
+                    body: vec![],
+                };
+            }
+        };
 
         let old_source = self.source.clone();
         self.source = new_source_path;
@@ -1346,37 +1415,35 @@ impl Compiler {
                     self.current().begin_scope();
                     match arm.pattern {
                         MatchPattern::Enum { name, tag, fields } => {
-                            let enum_idx = self
-                                .enums
-                                .iter()
-                                .position(|e| e.name == name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Referencing enum definition that doesn't exist ({})",
-                                        name
-                                    )
-                                });
+                            let enum_idx = match self.enums.iter().position(|e| e.name == *name) {
+                                Some(idx) => idx,
+                                None => {
+                                    self.error(0, 0, format!("referencing enum definition that doesn't exist: '{}'", name));
+                                    continue;
+                                }
+                            };
                             let enum_def = self.enums[enum_idx].clone();
                             let tag_idx = enum_def
                                 .variants
                                 .iter()
-                                .position(|v| v.name == tag)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Referencing enum field that doesn't exist ({}::{})",
-                                        name, tag
-                                    )
-                                });
+                                .position(|v| v.name == *tag);
+                            let tag_idx = if let Some(idx) = tag_idx {
+                                idx
+                            } else {
+                                self.error(0, 0, format!("referencing enum field that doesn't exist: '{}::{}'", name, tag));
+                                continue;
+                            };
                             let tag_info = &enum_def.variants[tag_idx];
 
                             if fields.len() != tag_info.fields.len() {
-                                panic!(
-                                    "Pattern for {}::{} expected {} fields, got {}",
+                                self.error(0, 0, format!(
+                                    "pattern for '{}::{}' expected {} fields, got {}",
                                     name,
                                     tag,
                                     tag_info.fields.len(),
                                     fields.len()
-                                );
+                                ));
+                                continue;
                             }
 
                             let check_reg = self.next_free_address();
@@ -1494,9 +1561,9 @@ impl Compiler {
     fn compile_continue(&mut self) -> u8 {
         if let Some(loop_ctx) = self.current().loop_stack.last() {
             let start = loop_ctx.start;
-            self.add_inst(IrOp::Jump { target: start })
+            self.add_inst(IrOp::Jump { target: start });
         } else {
-            panic!("Invalid keyword: 'continue' used out of loop");
+            self.error(0, 0, "cannot use 'continue' outside of a loop");
         }
 
         0
@@ -1507,7 +1574,7 @@ impl Compiler {
             let end = loop_ctx.end;
             self.add_inst(IrOp::Jump { target: end });
         } else {
-            panic!("Cannot use 'break' outside of a loop");
+            self.error(0, 0, "cannot use 'break' outside of a loop");
         }
 
         0
@@ -1573,7 +1640,8 @@ impl Compiler {
         let idx = self.enums.iter().position(|e| e.name == name);
 
         if idx.is_none() {
-            panic!("Referencing enum definition that doesn't exist ({})", name)
+            self.error(0, 0, format!("referencing enum definition that doesn't exist: '{}'", name));
+            return (0, 0, vec![]);
         }
 
         let enum_def = self.enums[idx.unwrap()].clone();
@@ -1581,22 +1649,23 @@ impl Compiler {
         let tag_idx = enum_def.variants.iter().position(|v| v.name == tag);
 
         if tag_idx.is_none() {
-            panic!(
-                "Referencing enum field that doesn't exist ({}::{})",
+            self.error(0, 0, format!(
+                "referencing enum field that doesn't exist: '{}::{}'",
                 name, tag
-            )
+            ));
+            return (enum_def.idx, 0, vec![]);
         }
 
         let tag_info = enum_def.variants[tag_idx.unwrap()].clone();
 
         if tag_info.fields.len() != fields.len() {
-            panic!(
-                "Expected {} values, got {} in {}::{}",
+            self.error(0, 0, format!(
+                "expected {} values, got {} in {}::{}",
                 tag_info.fields.len(),
                 fields.len(),
                 name,
                 tag
-            );
+            ));
         }
 
         let mut arg_map = vec![];

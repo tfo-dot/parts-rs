@@ -5,6 +5,7 @@ use crate::value::{NativeFunction, Value};
 use crate::vm::VM;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub value: Option<Value>,
     pub constants: Vec<Value>,
@@ -42,6 +43,9 @@ impl Engine {
             call: std::sync::Arc::new(call),
         });
     }
+    pub fn check(&self, source: &str) -> crate::diagnostic::Report {
+        crate::tools::LanguageTools::check_with_import_path(source, None, self.import_path.clone())
+    }
 
     pub fn execute(&self, source: &str) -> Result<Option<Value>, String> {
         self.run(source).map(|res| res.value)
@@ -51,14 +55,20 @@ impl Engine {
         let mut parser = Parser::new(source.to_string());
         let ast = parser
             .parse_all()
-            .map_err(|e| format!("Parser error: {:?}", e))?;
+            .map_err(|e| format!("Parser error: {}", e))?;
 
         let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
         let ast = compiler.compile_all(ast).map_err(|e| {
             format!(
-                "Compiler error: {}",
+                "Compiler error:\n{}",
                 e.iter()
-                    .map(|err| format!("Line {}:{} - {}", err.line, err.column, err.message))
+                    .map(|err| {
+                        if err.line > 0 {
+                            format!("Line {}:{} - {}", err.line, err.column, err.message)
+                        } else {
+                            format!("- {}", err.message)
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             )
@@ -67,7 +77,7 @@ impl Engine {
         let bytecode = Emitter {}.emit(ast);
 
         let mut vm = VM::with_natives(bytecode, compiler.constant_pool, self.natives.clone());
-        let value = vm.run().map_err(|e| format!("VM error: {:?}", e))?;
+        let value = vm.run().map_err(|e| format!("VM error: {}", e))?;
 
         Ok(ExecutionResult {
             value,

@@ -572,35 +572,31 @@ impl ParserRule {
                             pattern: vec![],
                         };
 
+                        parser.expect_operator("LEFT_PAREN")?;
+
                         loop {
-                            parser.expect_operator("LEFT_PAREN")?;
+                            if parser.match_operator("AT") {
+                                if parser.peek()?.kind == TokenType::Identifier {
+                                    let mut temp = parser.advance()?;
 
-                            loop {
-                                if parser.match_operator("AT") {
-                                    if parser.peek()?.kind == TokenType::Identifier {
-                                        let mut temp = parser.advance()?;
+                                    temp.lexeme = format!("@{}", temp.lexeme);
 
-                                        temp.lexeme = format!("@{}", temp.lexeme);
-
-                                        current_arm.pattern.push(temp);
-                                        continue;
-                                    } else {
-                                        current_arm.pattern.push(Token {
-                                            kind: TokenType::Operator,
-                                            lexeme: "AT".to_string(),
-                                            span: Span { line: 0, column: 0 },
-                                        });
-                                    }
+                                    current_arm.pattern.push(temp);
+                                    continue;
+                                } else {
+                                    current_arm.pattern.push(Token {
+                                        kind: TokenType::Operator,
+                                        lexeme: "AT".to_string(),
+                                        span: Span { line: 0, column: 0 },
+                                    });
                                 }
-
-                                if parser.match_operator("RIGHT_PAREN") {
-                                    break;
-                                }
-
-                                current_arm.pattern.push(parser.advance()?);
                             }
 
-                            break;
+                            if parser.match_operator("RIGHT_PAREN") {
+                                break;
+                            }
+
+                            current_arm.pattern.push(parser.advance()?);
                         }
 
                         parser.expect_operator("ARROW_LEFT")?;

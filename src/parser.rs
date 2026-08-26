@@ -24,6 +24,120 @@ pub enum Error {
     UnknownRule(Token),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::RuleNotFound => write!(f, "syntax rule not found"),
+            Error::ScannerError(err) => write!(f, "scanner error: {}", err),
+            Error::TokenMismatch(expected, actual) => {
+                let exp_str = if expected.lexeme.is_empty() {
+                    match expected.kind {
+                        TokenType::Keyword => "keyword".to_string(),
+                        TokenType::Identifier => "identifier".to_string(),
+                        TokenType::Number => "number".to_string(),
+                        TokenType::String => "string literal".to_string(),
+                        TokenType::Operator => "operator".to_string(),
+                        _ => format!("{:?}", expected.kind),
+                    }
+                } else if expected.kind == TokenType::Operator {
+                    Token::friendly_operator_name(&expected.lexeme).to_string()
+                } else {
+                    format!("'{}'", expected.lexeme)
+                };
+
+                let act_str = actual.user_friendly_name();
+                write!(f, "expected {}, found {}", exp_str, act_str)
+            }
+            Error::UnknownRule(token) => {
+                if token.kind == TokenType::Special && token.lexeme == "EOF" {
+                    write!(f, "unexpected end of file")
+                } else {
+                    write!(f, "unexpected {}", token.user_friendly_name())
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Error {
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Error::TokenMismatch(_, actual) => Some(actual.span),
+            Error::UnknownRule(token) => Some(token.span),
+            _ => None,
+        }
+    }
+
+    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+        match self {
+            Error::ScannerError(err) => err.to_diagnostic(source, file),
+            Error::TokenMismatch(expected, actual) => {
+                let exp_str = if expected.lexeme.is_empty() {
+                    match expected.kind {
+                        TokenType::Keyword => "keyword".to_string(),
+                        TokenType::Identifier => "identifier".to_string(),
+                        TokenType::Number => "number".to_string(),
+                        TokenType::String => "string literal".to_string(),
+                        TokenType::Operator => "operator".to_string(),
+                        _ => format!("{:?}", expected.kind),
+                    }
+                } else if expected.kind == TokenType::Operator {
+                    Token::friendly_operator_name(&expected.lexeme).to_string()
+                } else {
+                    format!("'{}'", expected.lexeme)
+                };
+
+                let act_str = actual.user_friendly_name();
+                let len = if actual.lexeme.is_empty() { 1 } else { actual.lexeme.len() };
+                let mut diag = crate::diagnostic::Diagnostic::error(format!("expected {}, found {}", exp_str, act_str))
+                    .with_location(actual.span.line, actual.span.column)
+                    .with_length(len)
+                    .with_label(format!("expected {}", exp_str));
+
+                if let Some(src) = source {
+                    diag = diag.with_source(src);
+                }
+                if let Some(f) = file {
+                    diag = diag.with_file(f);
+                }
+                diag
+            }
+            Error::UnknownRule(token) => {
+                let msg = if token.kind == TokenType::Special && token.lexeme == "EOF" {
+                    "unexpected end of file".to_string()
+                } else {
+                    format!("unexpected {}", token.user_friendly_name())
+                };
+                let len = if token.lexeme.is_empty() { 1 } else { token.lexeme.len() };
+                let mut diag = crate::diagnostic::Diagnostic::error(msg.clone())
+                    .with_location(token.span.line, token.span.column)
+                    .with_length(len)
+                    .with_label(msg);
+
+                if let Some(src) = source {
+                    diag = diag.with_source(src);
+                }
+                if let Some(f) = file {
+                    diag = diag.with_file(f);
+                }
+                diag
+            }
+            Error::RuleNotFound => {
+                let mut diag = crate::diagnostic::Diagnostic::error("syntax error: rule not found");
+                if let Some(src) = source {
+                    diag = diag.with_source(src);
+                }
+                if let Some(f) = file {
+                    diag = diag.with_file(f);
+                }
+                diag
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Parser {
     /** Last token returned from scanner */
