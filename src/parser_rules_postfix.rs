@@ -7,8 +7,8 @@ use crate::scanner::{Token, TokenType};
 use std::fmt;
 use std::sync::Arc;
 
-type CheckFn = dyn Fn(&mut Parser) -> bool;
-type ParseFn = dyn Fn(&mut Parser, Ast) -> Result<Ast, ParserError>;
+type CheckFn = dyn Fn(&mut Parser) -> bool + Send + Sync;
+type ParseFn = dyn Fn(&mut Parser, Ast) -> Result<Ast, ParserError> + Send + Sync;
 
 #[derive(Clone)]
 pub struct PostfixRule {

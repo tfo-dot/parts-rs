@@ -3,6 +3,12 @@ use crate::parser_rules_postfix::PostfixRule;
 use crate::scanner::{Scanner, ScannerError, Span, Token, TokenType};
 use crate::scanner_rules::ScannerRule;
 use rustc_hash::FxHashMap;
+use std::sync::{Arc, LazyLock};
+
+static DEFAULT_RULES: LazyLock<Arc<[ParserRule]>> =
+    LazyLock::new(|| ParserRule::get_default_rules().into());
+static DEFAULT_POSTFIX_RULES: LazyLock<Arc<[PostfixRule]>> =
+    LazyLock::new(|| PostfixRule::get_default_rules().into());
 
 #[derive(Debug)]
 pub struct MacroDef {
@@ -159,9 +165,9 @@ pub struct Parser {
     pub(crate) last_token: Token,
 
     /** Set of top level rules */
-    rules: Vec<ParserRule>,
+    rules: Arc<[ParserRule]>,
     /** Set of postfix rule */
-    rules_postfix: Vec<PostfixRule>,
+    rules_postfix: Arc<[PostfixRule]>,
     /** Internal scanner */
     scanner: Scanner,
     /** Macro definitions */
@@ -171,14 +177,17 @@ pub struct Parser {
 impl Parser {
     #[must_use]
     pub fn new(src: String) -> Self {
+        let rules = Arc::clone(&DEFAULT_RULES);
+        let rules_postfix = Arc::clone(&DEFAULT_POSTFIX_RULES);
+
         Self {
             last_token: Token {
                 kind: TokenType::Special,
                 lexeme: "".to_string(),
                 span: Span { column: 0, line: 0 },
             },
-            rules: ParserRule::get_default_rules(),
-            rules_postfix: PostfixRule::get_default_rules(),
+            rules,
+            rules_postfix,
             scanner: Scanner::new(ScannerRule::get_default_rules(), src),
             macros: FxHashMap::default(),
         }
@@ -203,9 +212,9 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Ast, Error> {
-        let rules = self.rules.clone();
-        let postfix = self.rules_postfix.clone();
-        for rule in rules {
+        let rules = Arc::clone(&self.rules);
+        let postfix = Arc::clone(&self.rules_postfix);
+        for rule in rules.iter() {
             if rule.rule.as_ref()(self) {
                 if rule.advance_token {
                     self.advance()?;
@@ -220,7 +229,7 @@ impl Parser {
                 loop {
                     let mut applied = false;
 
-                    for postfix_rule in &postfix {
+                    for postfix_rule in postfix.iter() {
                         if postfix_rule.rule.as_ref()(self) {
                             if postfix_rule.advance_token {
                                 self.advance()?;
@@ -246,10 +255,9 @@ impl Parser {
     }
 
     pub fn parse_rule(&mut self, id: &str) -> Result<Ast, Error> {
-        let rule = self
-            .rules
-            .clone()
-            .into_iter()
+        let rules = Arc::clone(&self.rules);
+        let rule = rules
+            .iter()
             .find(|rule| rule.id == id)
             .ok_or(Error::RuleNotFound)?;
 
@@ -265,23 +273,29 @@ impl Parser {
     }
 
     pub fn match_operator(&mut self, op: &str) -> bool {
-        self.match_token(Token {
-            kind: TokenType::Operator,
-            lexeme: op.to_string(),
-            span: Span { column: 0, line: 0 },
-        })
+        if self.check_operator(op) {
+            let _ = self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn match_keyword(&mut self, kw: &str) -> bool {
-        self.match_token(Token {
-            kind: TokenType::Keyword,
-            lexeme: kw.to_string(),
-            span: Span { column: 0, line: 0 },
-        })
+        if self.check_keyword(kw) {
+            let _ = self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn match_token(&mut self, tok: Token) -> bool {
-        let check = self.check(tok.clone());
+        let check = if let Ok(peeked) = self.peek_ref() {
+            peeked.kind == tok.kind && peeked.lexeme == tok.lexeme
+        } else {
+            false
+        };
 
         if check {
             let _ = self.advance();
@@ -291,27 +305,29 @@ impl Parser {
     }
 
     pub fn check(&mut self, tok: Token) -> bool {
-        self.peek().unwrap() == tok
+        if let Ok(peeked) = self.peek_ref() {
+            peeked.kind == tok.kind && peeked.lexeme == tok.lexeme
+        } else {
+            false
+        }
     }
 
     pub fn advance(&mut self) -> Result<Token, Error> {
-        let last_token_buf = self.last_token.clone();
-
         let token = self.scanner.get_next().map_err(Error::ScannerError)?;
-
-        self.last_token = token;
-
-        Ok(last_token_buf.clone())
+        Ok(std::mem::replace(&mut self.last_token, token))
     }
 
-    pub fn peek(&mut self) -> Result<Token, Error> {
+    pub fn peek_ref(&mut self) -> Result<&Token, Error> {
         if self.last_token.kind == TokenType::Special && self.last_token.lexeme.is_empty() {
             let tok = self.scanner.get_next().map_err(Error::ScannerError)?;
-
             self.last_token = tok;
         }
 
-        Ok(self.last_token.clone())
+        Ok(&self.last_token)
+    }
+
+    pub fn peek(&mut self) -> Result<Token, Error> {
+        self.peek_ref().cloned()
     }
 
     pub fn add_macro(&mut self, name: Token, macro_def: Vec<MacroArm>) {
@@ -438,7 +454,7 @@ impl Parser {
     }
 
     pub fn check_keyword(&mut self, lexeme: &str) -> bool {
-        if let Ok(token) = self.peek() {
+        if let Ok(token) = self.peek_ref() {
             token.kind == TokenType::Keyword && token.lexeme == lexeme
         } else {
             false
@@ -446,7 +462,7 @@ impl Parser {
     }
 
     pub fn check_operator(&mut self, lexeme: &str) -> bool {
-        if let Ok(token) = self.peek() {
+        if let Ok(token) = self.peek_ref() {
             token.kind == TokenType::Operator && token.lexeme == lexeme
         } else {
             false
@@ -454,7 +470,7 @@ impl Parser {
     }
 
     pub fn check_kind(&mut self, kind: TokenType) -> bool {
-        if let Ok(token) = self.peek() {
+        if let Ok(token) = self.peek_ref() {
             token.kind == kind
         } else {
             false

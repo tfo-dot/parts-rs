@@ -145,7 +145,11 @@ impl Scanner {
     }
 
     pub fn peek(&self) -> Option<char> {
-        self.source.chars().nth(self.index)
+        if self.index >= self.source.len() {
+            None
+        } else {
+            self.source[self.index..].chars().next()
+        }
     }
 
     pub fn parse_rule(
@@ -163,24 +167,32 @@ impl Scanner {
         };
 
         loop {
-            *index += 1;
-
-            let ch = source.chars().nth(*index);
-
-            if let Some(c) = ch {
-                if c == '\n' {
-                    *line += 1;
-                    *column = 0;
-                } else {
-                    *column += 1;
-                }
+            if *index >= source.len() {
+                break;
             }
+
+            let ch = source[*index..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            *index += ch_len;
+
+            if ch == '\n' {
+                *line += 1;
+                *column = 0;
+            } else {
+                *column += 1;
+            }
+
+            let next_ch = if *index < source.len() {
+                source[*index..].chars().next()
+            } else {
+                None
+            };
 
             let out_of_bounds = *index >= source.len();
             let no_base_but_valid =
-                rule.base_rule.is_none() && rule.valid_chars.contains(&ch.unwrap_or('\x00'));
+                rule.base_rule.is_none() && rule.valid_chars.contains(&next_ch.unwrap_or('\x00'));
             let matches_base =
-                rule.base_rule.is_some() && rule.base_rule.as_ref().unwrap()(&ch.unwrap_or('\x00'));
+                rule.base_rule.is_some() && rule.base_rule.as_ref().unwrap()(&next_ch.unwrap_or('\x00'));
             let matches_whole =
                 rule.rule.is_none() || rule.rule.as_ref().unwrap()(&source[start..*index]);
 
@@ -195,7 +207,7 @@ impl Scanner {
 
         Ok(vec![Token {
             kind: rule.result.clone(),
-            lexeme: source[start..*index].chars().collect(),
+            lexeme: source[start..*index].to_string(),
             span: start_span,
         }])
     }

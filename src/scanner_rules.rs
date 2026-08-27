@@ -203,9 +203,8 @@ impl ScannerRule {
                 result: TokenType::String,
                 base_rule: Some(Box::new(|_r| true)),
                 rule: Some(Box::new(|runs| {
-                    runs.len() == 1
-                        || runs.chars().collect::<Vec<_>>().first()
-                            != runs.chars().collect::<Vec<_>>().last()
+                    let bytes = runs.as_bytes();
+                    bytes.len() <= 1 || bytes[0] != bytes[bytes.len() - 1]
                 })),
                 process: Some(Box::new(|_mappings, runs, span| {
                     if runs.len() < 2 {
@@ -228,28 +227,23 @@ impl ScannerRule {
 
                     let content = &runs[1..runs.len() - 1];
                     let mut unescaped = String::with_capacity(content.len());
-                    let mut i = 0;
+                    let mut chars = content.chars();
 
-                    while i < content.len() {
-                        if content.chars().nth(i).unwrap() == '\\' {
-                            if i + 1 >= content.len() {
-                                return Err(ScannerError::InvalidEscape);
-                            }
-                            match content.chars().nth(i + 1).unwrap() {
-                                '"' => unescaped.push('"'),
-                                '\\' => unescaped.push('\\'),
-                                'n' => unescaped.push('\n'),
-                                't' => unescaped.push('\t'),
-                                'r' => unescaped.push('\r'),
-                                '0' => unescaped.push('\0'),
-                                'b' => unescaped.push('\x08'),
-                                'f' => unescaped.push('\x0C'),
+                    while let Some(c) = chars.next() {
+                        if c == '\\' {
+                            match chars.next() {
+                                Some('"') => unescaped.push('"'),
+                                Some('\\') => unescaped.push('\\'),
+                                Some('n') => unescaped.push('\n'),
+                                Some('t') => unescaped.push('\t'),
+                                Some('r') => unescaped.push('\r'),
+                                Some('0') => unescaped.push('\0'),
+                                Some('b') => unescaped.push('\x08'),
+                                Some('f') => unescaped.push('\x0C'),
                                 _ => return Err(ScannerError::InvalidEscape),
                             }
-                            i += 2;
                         } else {
-                            unescaped.push(content.chars().nth(i).unwrap());
-                            i += 1;
+                            unescaped.push(c);
                         }
                     }
 

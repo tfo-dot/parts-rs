@@ -7,8 +7,8 @@ use crate::{
 };
 use std::{fmt, sync::Arc};
 
-type CheckFn = dyn Fn(&mut Parser) -> bool;
-type ParseFn = dyn Fn(&mut Parser) -> Result<Ast, ParserError>;
+type CheckFn = dyn Fn(&mut Parser) -> bool + Send + Sync;
+type ParseFn = dyn Fn(&mut Parser) -> Result<Ast, ParserError> + Send + Sync;
 
 #[derive(Clone)]
 pub struct ParserRule {

@@ -22,56 +22,69 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
     };
 
     match opcode {
-        OpCode::Load => {
+        OpCode::LoadInt => {
             let reg = code[offset + 1];
-            let type_byte = code[offset + 2];
-            let val_type = OpCode::try_from(type_byte).unwrap();
-            print!("{:-12} Reg: {:<3} Type: {:?}", "LOAD", reg, val_type);
-
-            match val_type {
-                OpCode::ConstInt | OpCode::ConstDouble => {
-                    println!(" (8 bytes raw data)");
-                    offset + 11
-                }
-                OpCode::ConstBool => {
-                    println!(" Value: {}", code[offset + 3] != 0);
-                    offset + 4
-                }
-                OpCode::ConstString | OpCode::ConstRef | OpCode::ConstFun | OpCode::ConstObj => {
-                    let idx = u16::from_le_bytes([code[offset + 3], code[offset + 4]]) as usize;
-                    println!(
-                        " ConstIdx: {} ({:?})",
-                        idx,
-                        constants
-                            .get(idx)
-                            .map(|v| v.to_string())
-                            .unwrap_or_default()
-                    );
-                    offset + 5
-                }
-                OpCode::ConstReg => {
-                    println!(" FromReg: {}", code[offset + 3]);
-                    offset + 4
-                }
-                OpCode::ConstEnum => {
-                    let enum_idx = u16::from_le_bytes([code[offset + 3], code[offset + 4]]);
-                    let tag = code[offset + 5];
-                    let args_count = code[offset + 6];
-                    let mut args = vec![];
-
-                    for i in 0..args_count {
-                        args.push(code[offset + 7 + (i as usize) * 9 + 8]);
-                    }
-
-                    println!(" Enum: {}, tag: {} fields: {:?}", enum_idx, tag, args);
-                    offset + 7 + 9 * args_count as usize
-                }
-
-                _ => {
-                    println!();
-                    offset + 3
-                }
+            let raw_bytes: [u8; 8] = code[offset + 2..offset + 10].try_into().unwrap();
+            let val = i64::from_le_bytes(raw_bytes);
+            println!("{:-12} Reg: {:<3} Val: {}", "LOAD_INT", reg, val);
+            offset + 10
+        }
+        OpCode::LoadIntSmall => {
+            let reg = code[offset + 1];
+            let val = code[offset + 2] as i8;
+            println!("{:-12} Reg: {:<3} Val: {}", "LOAD_INT_S", reg, val);
+            offset + 3
+        }
+        OpCode::LoadDouble => {
+            let reg = code[offset + 1];
+            let raw_bytes: [u8; 8] = code[offset + 2..offset + 10].try_into().unwrap();
+            let val = f64::from_le_bytes(raw_bytes);
+            println!("{:-12} Reg: {:<3} Val: {}", "LOAD_DBL", reg, val);
+            offset + 10
+        }
+        OpCode::LoadBool => {
+            let reg = code[offset + 1];
+            let val = code[offset + 2] != 0;
+            println!("{:-12} Reg: {:<3} Val: {}", "LOAD_BOOL", reg, val);
+            offset + 3
+        }
+        OpCode::LoadConst | OpCode::LoadFun | OpCode::LoadObject => {
+            let reg = code[offset + 1];
+            let idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
+            let name = match opcode {
+                OpCode::LoadFun => "LOAD_FUN",
+                OpCode::LoadObject => "LOAD_OBJ",
+                _ => "LOAD_CONST",
+            };
+            println!(
+                "{:-12} Reg: {:<3} ConstIdx: {} ({:?})",
+                name,
+                reg,
+                idx,
+                constants
+                    .get(idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            );
+            offset + 4
+        }
+        OpCode::LoadReg => {
+            let dest = code[offset + 1];
+            let src = code[offset + 2];
+            println!("{:-12} Dest: {:<3} Src: {:<3}", "LOAD_REG", dest, src);
+            offset + 3
+        }
+        OpCode::LoadEnum => {
+            let reg = code[offset + 1];
+            let enum_idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]);
+            let tag = code[offset + 4];
+            let args_count = code[offset + 5];
+            let mut args = vec![];
+            for i in 0..args_count {
+                args.push(code[offset + 6 + (i as usize) * 9 + 8]);
             }
+            println!("LOAD_ENUM    Reg: {}, Enum: {}, tag: {} fields: {:?}", reg, enum_idx, tag, args);
+            offset + 6 + 9 * args_count as usize
         }
         OpCode::Call => {
             let ret = code[offset + 1];
@@ -88,6 +101,21 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 "CALL", ret, func, args
             );
             offset + 4 + args_count as usize
+        }
+        OpCode::TailCall => {
+            let func = code[offset + 1];
+            let args_count = code[offset + 2];
+            let mut args = vec![];
+
+            for i in 0..args_count {
+                args.push(code[offset + 3 + i as usize]);
+            }
+
+            println!(
+                "{:-12} FuncReg: {:<3} Args: {:?}",
+                "TAIL_CALL", func, args
+            );
+            offset + 3 + args_count as usize
         }
         OpCode::LoadNative => {
             let reg = code[offset + 1];
@@ -236,10 +264,6 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 "MATCH_ENUM", dest, src, enum_idx, tag
             );
             offset + 6
-        }
-        _ => {
-            println!("{:?}", opcode);
-            offset + 1
         }
     }
 }

@@ -2,7 +2,7 @@ use crate::{
     compiler::IrOp,
     parser::{Ast, BinaryOperator, Value},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct AstOptimizer {
     inline_candidates: HashMap<String, (Vec<String>, Ast)>,
@@ -27,10 +27,12 @@ impl AstOptimizer {
         }
     }
 
-    pub fn optimize_all(&self, nodes: &mut [Ast]) {
+    pub fn optimize_all(&self, nodes: &mut [Ast]) -> bool {
+        let mut changed = false;
         for node in nodes.iter_mut() {
-            self.optimize(node);
+            changed |= self.optimize(node);
         }
+        changed
     }
 
     pub fn collect(&mut self, node: &Ast) {
@@ -120,31 +122,36 @@ impl AstOptimizer {
             _ => {}
         }
     }
-    pub fn optimize(&self, node: &mut Ast) {
+    pub fn optimize(&self, node: &mut Ast) -> bool {
+        let mut changed = false;
         match node {
             Ast::Block { code } => {
-                let mut new_code = Vec::new();
-                for stmt in code.iter_mut() {
-                    self.optimize(stmt);
-                    new_code.push(stmt.clone());
-
+                let mut cut_idx = None;
+                for (idx, stmt) in code.iter_mut().enumerate() {
+                    changed |= self.optimize(stmt);
                     if matches!(stmt, Ast::Return { .. } | Ast::Raise { .. }) {
+                        cut_idx = Some(idx + 1);
                         break;
                     }
                 }
-                *code = new_code;
+                if let Some(cut) = cut_idx
+                    && cut < code.len()
+                {
+                    code.truncate(cut);
+                    changed = true;
+                }
             }
-            Ast::Declare { value, .. } => self.optimize(value),
-            Ast::Return { value } => self.optimize(value),
-            Ast::Raise { value } => self.optimize(value),
+            Ast::Declare { value, .. } => changed |= self.optimize(value),
+            Ast::Return { value } => changed |= self.optimize(value),
+            Ast::Raise { value } => changed |= self.optimize(value),
             Ast::Set { name, value } => {
-                self.optimize(name);
-                self.optimize(value);
+                changed |= self.optimize(name);
+                changed |= self.optimize(value);
             }
             Ast::Call { what, args } => {
-                self.optimize(what);
+                changed |= self.optimize(what);
                 for arg in args.iter_mut() {
-                    self.optimize(arg);
+                    changed |= self.optimize(arg);
                 }
             }
             Ast::Binary {
@@ -152,12 +159,59 @@ impl AstOptimizer {
                 right,
                 operator,
             } => {
-                self.optimize(left);
-                self.optimize(right);
+                changed |= self.optimize(left);
+                changed |= self.optimize(right);
 
                 if let Some(folded) = AstOptimizer::fold_binary(left, right, operator) {
                     *node = folded;
-                    return;
+                    return true;
+                }
+
+                if let Ast::Value(Value::Int(0)) = **right {
+                    match operator {
+                        BinaryOperator::Add
+                        | BinaryOperator::Minus
+                        | BinaryOperator::BitOr
+                        | BinaryOperator::BitXor => {
+                            *node = *left.clone();
+                            return true;
+                        }
+                        BinaryOperator::Multiply | BinaryOperator::BitAnd => {
+                            *node = Ast::Value(Value::Int(0));
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Ast::Value(Value::Int(0)) = **left {
+                    match operator {
+                        BinaryOperator::Add
+                        | BinaryOperator::BitOr
+                        | BinaryOperator::BitXor => {
+                            *node = *right.clone();
+                            return true;
+                        }
+                        BinaryOperator::Multiply | BinaryOperator::BitAnd => {
+                            *node = Ast::Value(Value::Int(0));
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Ast::Value(Value::Int(1)) = **right {
+                    match operator {
+                        BinaryOperator::Multiply | BinaryOperator::Divide => {
+                            *node = *left.clone();
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Ast::Value(Value::Int(1)) = **left
+                    && matches!(operator, BinaryOperator::Multiply)
+                {
+                    *node = *right.clone();
+                    return true;
                 }
 
                 if let Ast::Binary {
@@ -167,12 +221,27 @@ impl AstOptimizer {
                 } = node
                     && *operator == BinaryOperator::Modulo
                     && let Ast::Value(Value::Int(i)) = **right
-                    && i != 0
+                    && i > 0
                     && (i & (i - 1)) == 0
                 {
                     *operator = BinaryOperator::BitAnd;
-
                     **right = Ast::Value(Value::Int(i - 1));
+                    changed = true;
+                }
+
+                if let Ast::Binary {
+                    left: _,
+                    right,
+                    operator,
+                } = node
+                    && *operator == BinaryOperator::Multiply
+                    && let Ast::Value(Value::Int(i)) = **right
+                    && i > 1
+                    && (i & (i - 1)) == 0
+                {
+                    *operator = BinaryOperator::BitSHL;
+                    **right = Ast::Value(Value::Int(i.trailing_zeros() as i64));
+                    changed = true;
                 }
             }
             Ast::If {
@@ -180,10 +249,10 @@ impl AstOptimizer {
                 else_branch,
                 condition,
             } => {
-                self.optimize(condition);
-                self.optimize(then_branch);
+                changed |= self.optimize(condition);
+                changed |= self.optimize(then_branch);
                 if let Some(e) = else_branch {
-                    self.optimize(e);
+                    changed |= self.optimize(e);
                 }
 
                 if let Ast::Value(Value::Bool(b)) = &**condition {
@@ -194,38 +263,41 @@ impl AstOptimizer {
                     } else {
                         *node = Ast::Ignore;
                     }
+                    return true;
                 }
             }
             Ast::For { condition, body } => {
-                self.optimize(condition);
-                self.optimize(body);
+                changed |= self.optimize(condition);
+                changed |= self.optimize(body);
             }
             Ast::ForEach { iterable, body, .. } => {
-                self.optimize(iterable);
-                self.optimize(body);
+                changed |= self.optimize(iterable);
+                changed |= self.optimize(body);
             }
             Ast::Dot {
                 accessor, access, ..
             } => {
-                self.optimize(accessor);
-                self.optimize(access);
+                changed |= self.optimize(accessor);
+                changed |= self.optimize(access);
             }
             Ast::Object(pairs) => {
                 for (k, v) in pairs.iter_mut() {
-                    self.optimize(k);
-                    self.optimize(v);
+                    changed |= self.optimize(k);
+                    changed |= self.optimize(v);
                 }
             }
-            Ast::Value(Value::Fun { body, .. }) => self.optimize(body),
+            Ast::Value(Value::Fun { body, .. }) => {
+                changed |= self.optimize(body);
+            }
             Ast::Value(Value::EnumField { fields, .. }) => {
                 for f in fields.iter_mut() {
-                    self.optimize(f);
+                    changed |= self.optimize(f);
                 }
             }
             Ast::Match { target, arms } => {
-                self.optimize(target);
+                changed |= self.optimize(target);
                 for arm in arms.iter_mut() {
-                    self.optimize(&mut arm.body);
+                    changed |= self.optimize(&mut arm.body);
                 }
             }
             _ => {}
@@ -242,11 +314,12 @@ impl AstOptimizer {
             }
 
             let mut inlined_body = body_expr.clone();
-
             self.substitute(&mut inlined_body, &arg_map);
-
             *node = inlined_body;
+            changed = true;
         }
+
+        changed
     }
 
     fn substitute(&self, node: &mut Ast, arg_map: &HashMap<String, Ast>) {
@@ -338,12 +411,58 @@ impl AstOptimizer {
                 BinaryOperator::LessThan => return Some(Ast::Value(Value::Bool(l < r))),
                 BinaryOperator::GreaterThanOrEqual => return Some(Ast::Value(Value::Bool(l >= r))),
                 BinaryOperator::LessThanOrEqual => return Some(Ast::Value(Value::Bool(l <= r))),
-                BinaryOperator::Modulo => l % r,
+                BinaryOperator::Modulo => {
+                    if *r != 0 {
+                        l % r
+                    } else {
+                        return None;
+                    }
+                }
                 BinaryOperator::BitSHL => l << r,
                 BinaryOperator::BitSHR => l >> r,
             };
             return Some(Ast::Value(Value::Int(res)));
         }
+
+        if let (Ast::Value(Value::Double(l)), Ast::Value(Value::Double(r))) = (left, right) {
+            let res = match op {
+                BinaryOperator::Add => l + r,
+                BinaryOperator::Minus => l - r,
+                BinaryOperator::Multiply => l * r,
+                BinaryOperator::Divide => {
+                    if *r != 0.0 {
+                        l / r
+                    } else {
+                        return None;
+                    }
+                }
+                BinaryOperator::Equals => return Some(Ast::Value(Value::Bool(l == r))),
+                BinaryOperator::GreaterThan => return Some(Ast::Value(Value::Bool(l > r))),
+                BinaryOperator::LessThan => return Some(Ast::Value(Value::Bool(l < r))),
+                BinaryOperator::GreaterThanOrEqual => return Some(Ast::Value(Value::Bool(l >= r))),
+                BinaryOperator::LessThanOrEqual => return Some(Ast::Value(Value::Bool(l <= r))),
+                _ => return None,
+            };
+            return Some(Ast::Value(Value::Double(res)));
+        }
+
+        if let (Ast::Value(Value::String(l)), Ast::Value(Value::String(r))) = (left, right) {
+            if matches!(op, BinaryOperator::Add) {
+                let mut s = l.clone();
+                s.push_str(r);
+                return Some(Ast::Value(Value::String(s)));
+            }
+            if matches!(op, BinaryOperator::Equals) {
+                return Some(Ast::Value(Value::Bool(l == r)));
+            }
+        }
+
+        if let (Ast::Value(Value::Bool(l)), Ast::Value(Value::Bool(r))) = (left, right)
+            && matches!(op, BinaryOperator::Equals)
+        {
+            return Some(Ast::Value(Value::Bool(l == r)));
+        }
+
         None
     }
 }
@@ -357,14 +476,15 @@ impl IrOptimizer {
         loop {
             let start_len = current_ir.len();
             current_ir = Self::peephole_pass(current_ir);
+            current_ir = Self::copy_propagation_pass(current_ir);
             current_ir = Self::inc_dec_pass(current_ir);
             current_ir = Self::state_and_dead_store_pass(current_ir);
-
+            current_ir = Self::unreachable_code_pass(current_ir);
+            current_ir = Self::jump_threading_pass(current_ir);
             if current_ir.len() == start_len {
                 break;
             }
         }
-
         current_ir
     }
 
@@ -478,7 +598,9 @@ impl IrOptimizer {
                         }
                         IrOp::LoadReg { src, .. } => *src == *dest,
                         IrOp::SetProperty { obj, val, .. } => *obj == *dest || *val == *dest,
-                        IrOp::Call { what, args, .. } => *what == *dest || args.contains(dest),
+                        IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
+                            *what == *dest || args.contains(dest)
+                        }
                         IrOp::LoadEnumField { args, .. } => args.iter().any(|(_, reg)| reg == dest),
                         IrOp::MatchEnum { src, .. } => *src == *dest,
                         _ => false,
@@ -607,6 +729,193 @@ impl IrOptimizer {
             i += 1;
         }
 
+        optimized
+    }
+    fn unreachable_code_pass(ir: Vec<IrOp>) -> Vec<IrOp> {
+        let mut optimized = Vec::with_capacity(ir.len());
+        let mut skipping = false;
+        for op in ir {
+            if skipping {
+                if matches!(op, IrOp::Label(_)) {
+                    skipping = false;
+                    optimized.push(op);
+                }
+                continue;
+            }
+            if matches!(op, IrOp::Jump { .. } | IrOp::Return { .. } | IrOp::TailCall { .. }) {
+                skipping = true;
+            }
+            optimized.push(op);
+        }
+        optimized
+    }
+    fn copy_propagation_pass(ir: Vec<IrOp>) -> Vec<IrOp> {
+        let mut optimized = Vec::with_capacity(ir.len());
+        let mut copies: HashMap<u8, u8> = HashMap::new();
+
+        for mut op in ir {
+            if matches!(
+                op,
+                IrOp::Label(_)
+                    | IrOp::Jump { .. }
+                    | IrOp::JumpNot { .. }
+                    | IrOp::Call { .. }
+                    | IrOp::TailCall { .. }
+            ) {
+                copies.clear();
+            }
+
+            match &mut op {
+                IrOp::Binary { left, right, .. } => {
+                    if let Some(&src) = copies.get(left) {
+                        *left = src;
+                    }
+                    if let Some(&src) = copies.get(right) {
+                        *right = src;
+                    }
+                }
+                IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
+                    if let Some(&src) = copies.get(what) {
+                        *what = src;
+                    }
+                    for arg in args.iter_mut() {
+                        if let Some(&src) = copies.get(arg) {
+                            *arg = src;
+                        }
+                    }
+                }
+                IrOp::GetProperty { obj, .. } => {
+                    if let Some(&src) = copies.get(obj) {
+                        *obj = src;
+                    }
+                }
+                IrOp::GetPropertyDyn { obj, key, .. } => {
+                    if let Some(&src) = copies.get(obj) {
+                        *obj = src;
+                    }
+                    if let Some(&src) = copies.get(key) {
+                        *key = src;
+                    }
+                }
+                IrOp::SetProperty { obj, val, .. } => {
+                    if let Some(&src) = copies.get(obj) {
+                        *obj = src;
+                    }
+                    if let Some(&src) = copies.get(val) {
+                        *val = src;
+                    }
+                }
+                IrOp::SetPropertyDyn { obj, key, val } => {
+                    if let Some(&src) = copies.get(obj) {
+                        *obj = src;
+                    }
+                    if let Some(&src) = copies.get(key) {
+                        *key = src;
+                    }
+                    if let Some(&src) = copies.get(val) {
+                        *val = src;
+                    }
+                }
+                IrOp::Return { value } => {
+                    if let Some(&src) = copies.get(value) {
+                        *value = src;
+                    }
+                }
+                IrOp::JumpNot { condition, .. } => {
+                    if let Some(&src) = copies.get(condition) {
+                        *condition = src;
+                    }
+                }
+                IrOp::MatchEnum { src, .. } => {
+                    if let Some(&s) = copies.get(src) {
+                        *src = s;
+                    }
+                }
+                _ => {}
+            }
+
+            if let IrOp::LoadReg { dest, src } = op {
+                if dest != src {
+                    copies.insert(dest, src);
+                }
+            } else if let Some(dest) = Self::writes_dest(&op) {
+                copies.remove(&dest);
+                copies.retain(|_, &mut v| v != dest);
+            }
+
+            optimized.push(op);
+        }
+        optimized
+    }
+
+    fn writes_dest(op: &IrOp) -> Option<u8> {
+        match op {
+            IrOp::LoadInt { dest, .. }
+            | IrOp::LoadBool { dest, .. }
+            | IrOp::LoadConst { dest, .. }
+            | IrOp::LoadObject { dest, .. }
+            | IrOp::LoadNative { dest, .. }
+            | IrOp::LoadFun { dest, .. }
+            | IrOp::LoadReg { dest, .. }
+            | IrOp::Binary { dest, .. }
+            | IrOp::GetProperty { dest, .. }
+            | IrOp::GetPropertyDyn { dest, .. }
+            | IrOp::Call { dest, .. }
+            | IrOp::LoadEnumField { dest, .. }
+            | IrOp::MatchEnum { dest, .. } => Some(*dest),
+            _ => None,
+        }
+    }
+
+    fn jump_threading_pass(ir: Vec<IrOp>) -> Vec<IrOp> {
+        let mut jump_map: HashMap<usize, usize> = HashMap::new();
+        let mut i = 0;
+        while i < ir.len() {
+            if let IrOp::Label(l1) = ir[i]
+                && i + 1 < ir.len()
+                && let IrOp::Jump { target: l2 } = ir[i + 1]
+            {
+                jump_map.insert(l1, l2);
+            }
+            i += 1;
+        }
+
+        if jump_map.is_empty() {
+            return ir;
+        }
+
+        let mut resolved_map = HashMap::new();
+        for (&start, &next) in &jump_map {
+            let mut target = next;
+            let mut visited = HashSet::new();
+            visited.insert(start);
+            while let Some(&further) = jump_map.get(&target) {
+                if visited.contains(&further) {
+                    break;
+                }
+                visited.insert(further);
+                target = further;
+            }
+            resolved_map.insert(start, target);
+        }
+
+        let mut optimized = Vec::with_capacity(ir.len());
+        for mut op in ir {
+            match &mut op {
+                IrOp::Jump { target } => {
+                    if let Some(&final_t) = resolved_map.get(target) {
+                        *target = final_t;
+                    }
+                }
+                IrOp::JumpNot { target, .. } => {
+                    if let Some(&final_t) = resolved_map.get(target) {
+                        *target = final_t;
+                    }
+                }
+                _ => {}
+            }
+            optimized.push(op);
+        }
         optimized
     }
 }

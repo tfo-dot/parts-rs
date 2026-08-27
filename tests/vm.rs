@@ -17,11 +17,9 @@ mod tests {
 
     #[test]
     fn check_call_no_args() {
-        //[load @ 0 cosnt @ 0], [Call, return @ 1, func @ 0, 0 args], [return @ 1]
         let code = vec![
-            OpCode::Load as u8,
+            OpCode::LoadFun as u8,
             0,
-            OpCode::ConstFun as u8,
             0,
             0,
             OpCode::Call as u8,
@@ -35,9 +33,8 @@ mod tests {
         let constants = vec![Value::Fun {
             arity: 0,
             body: vec![
-                OpCode::Load as u8,
+                OpCode::LoadBool as u8,
                 0,
-                OpCode::ConstBool as u8,
                 1,
                 OpCode::Return as u8,
                 0,
@@ -53,16 +50,13 @@ mod tests {
 
     #[test]
     fn check_call_one_arg() {
-        //[load @ 0 cosnt @ 0], [Call, return @ 1, func @ 0, 1 arg], [return @ 1]
         let code = vec![
-            OpCode::Load as u8,
-            0,
-            OpCode::ConstFun as u8,
+            OpCode::LoadFun as u8,
             0,
             0,
-            OpCode::Load as u8,
+            0,
+            OpCode::LoadBool as u8,
             1,
-            OpCode::ConstBool as u8,
             0,
             OpCode::Call as u8,
             2,
@@ -88,28 +82,12 @@ mod tests {
     #[test]
     fn check_test_binary() {
         let code = vec![
-            OpCode::Load as u8,
+            OpCode::LoadIntSmall as u8,
             0,
-            OpCode::ConstInt as u8,
             1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            OpCode::Load as u8,
+            OpCode::LoadIntSmall as u8,
             1,
-            OpCode::ConstInt as u8,
             1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
             OpCode::Binary as u8,
             0,
             2,
@@ -135,14 +113,13 @@ mod tests {
 
         // Function body (runs at fp = 256):
         // Load reg 0 with Double 42.0
-        // Load reg 1 with ConstEnum(enum 0, tag 0, 1 field: power_hash from reg 0)
+        // Load reg 1 with LoadEnum(enum 0, tag 0, 1 field: power_hash from reg 0)
         // Return reg 1
-        let mut func_body = vec![OpCode::Load as u8, 0, OpCode::ConstDouble as u8];
+        let mut func_body = vec![OpCode::LoadDouble as u8, 0];
         func_body.extend(42.0f64.to_le_bytes());
         func_body.extend(vec![
-            OpCode::Load as u8,
+            OpCode::LoadEnum as u8,
             1,
-            OpCode::ConstEnum as u8,
             0, // enum_idx lo
             0, // enum_idx hi
             0, // tag
@@ -158,9 +135,8 @@ mod tests {
         // GetProperty reg 2 from obj reg 1, key const 1 (hash)
         // Return reg 2
         let main_code = vec![
-            OpCode::Load as u8,
+            OpCode::LoadFun as u8,
             0,
-            OpCode::ConstFun as u8,
             0,
             0,
             OpCode::Call as u8,

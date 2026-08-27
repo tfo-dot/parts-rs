@@ -235,9 +235,7 @@ fn get_code(config: Cli) -> CompilerOutput {
             let mut changed = true;
             while changed {
                 pass += 1;
-                let old_ast = ast.clone();
-                optimizer.optimize_all(&mut ast);
-                changed = old_ast != ast;
+                changed = optimizer.optimize_all(&mut ast);
             }
         }
 
@@ -424,9 +422,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
         optimizer.collect_all(&ast);
         let mut changed = true;
         while changed {
-            let old_ast = ast.clone();
-            optimizer.optimize_all(&mut ast);
-            changed = old_ast != ast;
+            changed = optimizer.optimize_all(&mut ast);
         }
     }
 

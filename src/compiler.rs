@@ -11,8 +11,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{LazyLock, Mutex};
 
 use crate::parser::Ast;
+
+static STD_AST_CACHE: LazyLock<Mutex<FxHashMap<String, Vec<Ast>>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -107,7 +111,7 @@ impl Context {
 
     fn begin_scope(&mut self) {
         self.scopes.push(FxHashMap::default());
-        self.scope_bases.push(self.next_free_register);
+        self.scope_bases.push(self.local_count);
     }
 
     fn end_scope(&mut self) {
@@ -117,7 +121,6 @@ impl Context {
             self.next_free_register = base;
         }
     }
-
     fn add_local(&mut self, name: String) -> u8 {
         let reg = self.local_count;
 
@@ -141,6 +144,7 @@ pub struct Compiler {
     pub had_error: bool,
 
     pub constant_pool: Vec<Value>,
+    constant_map: FxHashMap<Value, usize>,
     pub enums: Vec<EnumDef>,
     contexts: Vec<Context>,
     std: StdDefinition,
@@ -221,6 +225,10 @@ pub enum IrOp {
         what: u8,
         args: Vec<u8>,
     },
+    TailCall {
+        what: u8,
+        args: Vec<u8>,
+    },
     Binary {
         dest: u8,
         op: BinaryOperator,
@@ -260,6 +268,7 @@ impl Compiler {
         let mut compiler = Self {
             contexts: vec![Context::new()],
             constant_pool: vec![],
+            constant_map: FxHashMap::default(),
             errors: vec![],
             had_error: false,
             std: StdDefinition::get_core(),
@@ -267,7 +276,6 @@ impl Compiler {
             source,
             enums: vec![],
         };
-
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
             variants: vec![
@@ -336,6 +344,16 @@ impl Compiler {
         self.current().next_free_register += 1;
         address
     }
+    fn get_or_add_constant(&mut self, val: Value) -> usize {
+        if let Some(&idx) = self.constant_map.get(&val) {
+            idx
+        } else {
+            let idx = self.constant_pool.len();
+            self.constant_pool.push(val.clone());
+            self.constant_map.insert(val, idx);
+            idx
+        }
+    }
 
     fn new_label(&mut self) -> usize {
         let id = self.next_label_id;
@@ -344,69 +362,95 @@ impl Compiler {
     }
 
     fn compile_module(&mut self, source: String) -> Value {
-        let (raw_source, new_source_path) =
-            if source.starts_with("@std/") || self.source.starts_with("@std") {
-                let virtual_path = if let Some(stripped) = source.strip_prefix("@std/") {
-                    PathBuf::from(stripped)
-                } else {
-                    self.source.join(&source)
-                };
-
-                // Normalize the virtual path (remove @std prefix if present for lookup)
-                let mut internal_path = virtual_path.clone();
-                if internal_path.starts_with("@std") {
-                    internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
-                }
-
-                let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
-
-                let file = crate::Assets::get(internal_path_str).unwrap_or_else(|| {
-                    panic!(
-                        "Standard library module not found: {} (original: {})",
-                        internal_path_str, source
-                    )
-                });
-                let content =
-                    String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
-
-                (
-                    content,
-                    PathBuf::from("@std")
-                        .join(internal_path_str)
-                        .parent()
-                        .unwrap()
-                        .to_path_buf(),
-                )
+        let is_std = source.starts_with("@std/") || self.source.starts_with("@std");
+        let (raw_source, new_source_path, internal_path_opt) = if is_std {
+            let virtual_path = if let Some(stripped) = source.strip_prefix("@std/") {
+                PathBuf::from(stripped)
             } else {
-                let full_path = self.source.join(&source);
-                let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
-                let path_str = canonical_path.to_str().unwrap().to_string();
-                let content = match fs::read_to_string(&canonical_path) {
-                    Ok(c) => c,
+                self.source.join(&source)
+            };
+
+            // Normalize the virtual path (remove @std prefix if present for lookup)
+            let mut internal_path = virtual_path.clone();
+            if internal_path.starts_with("@std") {
+                internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
+            }
+
+            let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
+
+            let file = crate::Assets::get(internal_path_str).unwrap_or_else(|| {
+                panic!(
+                    "Standard library module not found: {} (original: {})",
+                    internal_path_str, source
+                )
+            });
+            let content =
+                String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
+
+            (
+                content,
+                PathBuf::from("@std")
+                    .join(internal_path_str)
+                    .parent()
+                    .unwrap()
+                    .to_path_buf(),
+                Some(internal_path_str.to_string()),
+            )
+        } else {
+            let full_path = self.source.join(&source);
+            let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
+            let path_str = canonical_path.to_str().unwrap().to_string();
+            let content = match fs::read_to_string(&canonical_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
+                    return Value::Fun {
+                        arity: 0,
+                        body: vec![],
+                    };
+                }
+            };
+            (content, canonical_path.parent().unwrap().to_path_buf(), None)
+        };
+
+        let import_ast = if let Some(ref path_key) = internal_path_opt {
+            let mut cache = STD_AST_CACHE.lock().unwrap();
+            if let Some(cached) = cache.get(path_key) {
+                cached.clone()
+            } else {
+                let mut p = Parser::new(raw_source);
+                let ast = match p.parse_all() {
+                    Ok(ast) => ast,
                     Err(e) => {
-                        self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
+                        self.error(
+                            0,
+                            0,
+                            format!("syntax error in imported module '{}': {}", source, e),
+                        );
                         return Value::Fun {
                             arity: 0,
                             body: vec![],
                         };
                     }
                 };
-                (content, canonical_path.parent().unwrap().to_path_buf())
-            };
-
-        let mut p = Parser::new(raw_source);
-        let import_ast = match p.parse_all() {
-            Ok(ast) => ast,
-            Err(e) => {
-                self.error(
-                    0,
-                    0,
-                    format!("syntax error in imported module '{}': {}", source, e),
-                );
-                return Value::Fun {
-                    arity: 0,
-                    body: vec![],
-                };
+                cache.insert(path_key.clone(), ast.clone());
+                ast
+            }
+        } else {
+            let mut p = Parser::new(raw_source);
+            match p.parse_all() {
+                Ok(ast) => ast,
+                Err(e) => {
+                    self.error(
+                        0,
+                        0,
+                        format!("syntax error in imported module '{}': {}", source, e),
+                    );
+                    return Value::Fun {
+                        arity: 0,
+                        body: vec![],
+                    };
+                }
             }
         };
 
@@ -429,13 +473,7 @@ impl Compiler {
         }
         let obj_reg = self.next_free_address();
         let obj_val = Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
-        let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
-            Some(idx) => idx,
-            None => {
-                self.constant_pool.push(obj_val);
-                self.constant_pool.len() - 1
-            }
-        };
+        let obj_idx = self.get_or_add_constant(obj_val);
 
         self.add_inst(IrOp::LoadObject {
             dest: obj_reg,
@@ -445,13 +483,7 @@ impl Compiler {
         let top_level = self.current().top_level_names.clone();
         for (name, reg) in top_level {
             let hash = Value::Hash(Value::String(name.into()).get_hash());
-            let const_idx = match self.constant_pool.iter().position(|c| *c == hash) {
-                Some(idx) => idx,
-                None => {
-                    self.constant_pool.push(hash);
-                    self.constant_pool.len() - 1
-                }
-            };
+            let const_idx = self.get_or_add_constant(hash);
 
             self.add_inst(IrOp::SetProperty {
                 obj: obj_reg,
@@ -482,12 +514,12 @@ impl Compiler {
                         idx,
                     };
                 } else {
-                    self.constant_pool
-                        .push(Value::EnumDefinition(self.enums.len().try_into().unwrap()));
+                    let enum_val = Value::EnumDefinition(self.enums.len().try_into().unwrap());
+                    let idx = self.get_or_add_constant(enum_val);
                     self.enums.push(EnumDef {
                         name: name.clone(),
                         variants: variants.clone(),
-                        idx: self.constant_pool.len() - 1,
+                        idx,
                     });
                 }
             }
@@ -661,14 +693,7 @@ impl Compiler {
                                 }
 
                                 let hash = Value::Hash(Value::String(r.clone()).get_hash());
-                                let const_idx =
-                                    match self.constant_pool.iter().position(|x| x == &hash) {
-                                        Some(idx) => idx,
-                                        None => {
-                                            self.constant_pool.push(hash);
-                                            self.constant_pool.len() - 1
-                                        }
-                                    };
+                                let const_idx = self.get_or_add_constant(hash);
 
                                 self.add_inst(IrOp::LoadConst {
                                     dest: address,
@@ -683,14 +708,7 @@ impl Compiler {
                             | Value::EnumDefinition(_)
                             | Value::EnumField { .. }
                             | Value::Bytes(_) => {
-                                let idx = match self.constant_pool.iter().position(|x| x == &v) {
-                                    Some(expr) => expr,
-                                    None => {
-                                        self.constant_pool.push(v);
-                                        self.constant_pool.len() - 1
-                                    }
-                                };
-
+                                let idx = self.get_or_add_constant(v);
                                 self.add_inst(IrOp::LoadConst { dest: address, idx });
                             }
                         }
@@ -704,6 +722,8 @@ impl Compiler {
                         });
                     }
                 };
+
+                self.current().next_free_register = self.current().local_count;
 
                 address
             }
@@ -741,14 +761,7 @@ impl Compiler {
                         let reg = self.next_free_address();
                         let hash =
                             Value::Hash(Value::String(ref_val.to_string().into()).get_hash());
-
-                        let idx = match self.constant_pool.iter().position(|c| *c == hash) {
-                            Some(hash_idx) => hash_idx,
-                            None => {
-                                self.constant_pool.push(hash);
-                                self.constant_pool.len() - 1
-                            }
-                        };
+                        let idx = self.get_or_add_constant(hash);
 
                         self.add_inst(IrOp::LoadNative {
                             dest: reg,
@@ -776,13 +789,7 @@ impl Compiler {
                         }
 
                         let hash = Value::Hash(Value::String(r.clone()).get_hash());
-                        let const_idx = match self.constant_pool.iter().position(|x| x == &hash) {
-                            Some(idx) => idx,
-                            None => {
-                                self.constant_pool.push(hash);
-                                self.constant_pool.len() - 1
-                            }
-                        };
+                        let const_idx = self.get_or_add_constant(hash);
 
                         self.add_inst(IrOp::LoadConst {
                             dest: reg,
@@ -797,14 +804,7 @@ impl Compiler {
                     | Value::EnumDefinition(_)
                     | Value::EnumField { .. }
                     | Value::Bytes(_) => {
-                        let idx = match self.constant_pool.iter().position(|x| x == &v) {
-                            Some(expr) => expr,
-                            None => {
-                                self.constant_pool.push(v);
-                                self.constant_pool.len() - 1
-                            }
-                        };
-
+                        let idx = self.get_or_add_constant(v);
                         self.add_inst(IrOp::LoadConst { dest: reg, idx });
                     }
                 }
@@ -861,13 +861,7 @@ impl Compiler {
                     }
 
                     let obj_val = Value::Object(Rc::new(RefCell::new(static_map)));
-                    let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
-                        Some(idx) => idx,
-                        None => {
-                            self.constant_pool.push(obj_val);
-                            self.constant_pool.len() - 1
-                        }
-                    };
+                    let obj_idx = self.get_or_add_constant(obj_val);
 
                     self.add_inst(IrOp::LoadObject {
                         dest: obj_reg,
@@ -875,13 +869,7 @@ impl Compiler {
                     });
                 } else {
                     let obj_val = Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
-                    let obj_idx = match self.constant_pool.iter().position(|c| *c == obj_val) {
-                        Some(idx) => idx,
-                        None => {
-                            self.constant_pool.push(obj_val);
-                            self.constant_pool.len() - 1
-                        }
-                    };
+                    let obj_idx = self.get_or_add_constant(obj_val);
 
                     self.add_inst(IrOp::LoadObject {
                         dest: obj_reg,
@@ -899,14 +887,7 @@ impl Compiler {
                                     Value::Hash(converted.get_hash())
                                 }
                             };
-                            let hash_idx = match self.constant_pool.iter().position(|c| *c == hash)
-                            {
-                                Some(idx) => idx,
-                                None => {
-                                    self.constant_pool.push(hash);
-                                    self.constant_pool.len() - 1
-                                }
-                            };
+                            let hash_idx = self.get_or_add_constant(hash);
 
                             let val_reg = self.compile(val_ast);
 
@@ -930,10 +911,53 @@ impl Compiler {
 
                 obj_reg
             }
-            Ast::Return { value } | Ast::Raise { value } => {
+            Ast::Raise { value } => {
                 let reg = self.compile(*value);
                 self.add_inst(IrOp::Return { value: reg });
+                0
+            }
+            Ast::Return { value } => {
+                if self.contexts.len() > 1
+                    && let Ast::Call { what, args } = *value
+                {
+                    let (caller, final_args) = if let Ast::Dot {
+                        accessor,
+                        access,
+                        resolve: _,
+                    } = *what.clone()
+                    {
+                        let is_ufcs = if let Ast::Value(ParserValue::Ref(ref name)) = *access {
+                            self.current().resolve_local(name).is_some()
+                                || self.std.functions.iter().any(|f| f.name == name)
+                        } else {
+                            false
+                        };
 
+                        if is_ufcs {
+                            let mut new_args = vec![*accessor];
+                            new_args.extend(args);
+                            (self.compile(*access), new_args)
+                        } else {
+                            (self.compile(*what), args)
+                        }
+                    } else {
+                        (self.compile(*what), args)
+                    };
+
+                    let mut compiled_args = vec![];
+                    for arg in &final_args {
+                        compiled_args.push(self.compile(arg.clone()));
+                    }
+
+                    self.add_inst(IrOp::TailCall {
+                        what: caller,
+                        args: compiled_args,
+                    });
+                    return 0;
+                }
+
+                let reg = self.compile(*value);
+                self.add_inst(IrOp::Return { value: reg });
                 0
             }
             Ast::Call { what, args } => {
@@ -971,9 +995,10 @@ impl Compiler {
                 self.add_inst(IrOp::Call {
                     dest: return_adr,
                     what: caller,
-                    args: compiled_args.clone(),
+                    args: compiled_args,
                 });
 
+                self.current().next_free_register = return_adr + 1;
                 return_adr
             }
             Ast::Binary {
@@ -993,6 +1018,7 @@ impl Compiler {
                     right: compiled_right,
                 });
 
+                self.current().next_free_register = reg + 1;
                 reg
             }
             Ast::If {
@@ -1012,7 +1038,6 @@ impl Compiler {
                 let _ = self.compile_all(used_stds);
 
                 let cond = self.compile(*condition);
-
                 let else_label = self.new_label();
                 let end_label = self.new_label();
 
@@ -1046,7 +1071,6 @@ impl Compiler {
                 self.add_inst(IrOp::Label(start_label));
 
                 let cond_reg = self.compile(*condition);
-
                 self.add_inst(IrOp::JumpNot {
                     target: end_label,
                     condition: cond_reg,
@@ -1119,7 +1143,6 @@ impl Compiler {
                 let mut last_reg = 0;
                 for ast in code {
                     last_reg = self.compile(ast);
-
                     self.current().next_free_register = self.current().local_count;
                 }
 
@@ -1145,49 +1168,44 @@ impl Compiler {
                 }
 
                 let compiled_accessor = self.compile(*accessor);
-                let reg = self.next_free_address();
 
                 if resolve {
                     let compiled_access = self.compile(*access);
+                    let reg = self.next_free_address();
 
                     self.add_inst(IrOp::GetPropertyDyn {
                         dest: reg,
                         obj: compiled_accessor,
                         key: compiled_access,
                     });
+                    self.current().next_free_register = reg + 1;
+                    reg
+                } else if let Ast::Value(val) = *access {
+                    let access_hash = match val {
+                        ParserValue::Ref(ref name) => {
+                            Value::String(Rc::new(name.clone())).get_hash()
+                        }
+                        _ => {
+                            let converted = self.convert_const(val);
+                            converted.get_hash()
+                        }
+                    };
+
+                    let hash_val = Value::Hash(access_hash);
+                    let hash_idx = self.get_or_add_constant(hash_val);
+
+                    let reg = self.next_free_address();
+
+                    self.add_inst(IrOp::GetProperty {
+                        dest: reg,
+                        obj: compiled_accessor,
+                        key: hash_idx,
+                    });
+                    self.current().next_free_register = reg + 1;
+                    reg
                 } else {
-                    if let Ast::Value(val) = *access {
-                        let access_hash = match val {
-                            ParserValue::Ref(ref name) => {
-                                Value::String(Rc::new(name.clone())).get_hash()
-                            }
-                            _ => {
-                                let converted = self.convert_const(val);
-                                converted.get_hash()
-                            }
-                        };
-
-                        let hash_val = Value::Hash(access_hash);
-                        let hash_idx = match self.constant_pool.iter().position(|c| *c == hash_val)
-                        {
-                            Some(i) => i,
-                            None => {
-                                self.constant_pool.push(hash_val);
-                                self.constant_pool.len() - 1
-                            }
-                        };
-
-                        self.add_inst(IrOp::GetProperty {
-                            dest: reg,
-                            obj: compiled_accessor,
-                            key: hash_idx,
-                        });
-                    } else {
-                        panic!("AST Error: Static property access requires Ast::Value");
-                    }
+                    panic!("AST Error: Static property access requires Ast::Value");
                 }
-
-                reg
             }
 
             Ast::Set { name, value } => match *name {
@@ -1230,14 +1248,7 @@ impl Compiler {
                                 }
 
                                 let hash = Value::Hash(Value::String(r.clone()).get_hash());
-                                let hash_const =
-                                    match self.constant_pool.iter().position(|x| x == &hash) {
-                                        Some(idx) => idx,
-                                        None => {
-                                            self.constant_pool.push(hash);
-                                            self.constant_pool.len() - 1
-                                        }
-                                    };
+                                let hash_const = self.get_or_add_constant(hash);
 
                                 self.add_inst(IrOp::LoadConst {
                                     dest: lhs_reg,
@@ -1252,14 +1263,7 @@ impl Compiler {
                             | Value::EnumDefinition(_)
                             | Value::EnumField { .. }
                             | Value::Bytes(_) => {
-                                let idx = match self.constant_pool.iter().position(|x| x == &v) {
-                                    Some(expr) => expr,
-                                    None => {
-                                        self.constant_pool.push(v);
-                                        self.constant_pool.len() - 1
-                                    }
-                                };
-
+                                let idx = self.get_or_add_constant(v);
                                 self.add_inst(IrOp::LoadConst { dest: lhs_reg, idx });
                             }
                         }
@@ -1289,36 +1293,27 @@ impl Compiler {
                             key: compiled_access,
                             val: compiled_value,
                         });
+                    } else if let Ast::Value(val) = *access {
+                        let hash_access = match val {
+                            ParserValue::Ref(ref name) => {
+                                Value::String(Rc::new(name.clone())).get_hash()
+                            }
+                            _ => {
+                                let converted = self.convert_const(val);
+                                converted.get_hash()
+                            }
+                        };
+
+                        let hash_val = Value::Hash(hash_access);
+                        let hash_idx = self.get_or_add_constant(hash_val);
+
+                        self.add_inst(IrOp::SetProperty {
+                            obj: compiled_accessor,
+                            key: hash_idx,
+                            val: compiled_value,
+                        });
                     } else {
-                        if let Ast::Value(val) = *access {
-                            let hash_access = match val {
-                                ParserValue::Ref(ref name) => {
-                                    Value::String(Rc::new(name.clone())).get_hash()
-                                }
-                                _ => {
-                                    let converted = self.convert_const(val);
-                                    converted.get_hash()
-                                }
-                            };
-
-                            let hash_val = Value::Hash(hash_access);
-                            let hash_idx =
-                                match self.constant_pool.iter().position(|c| *c == hash_val) {
-                                    Some(i) => i,
-                                    None => {
-                                        self.constant_pool.push(hash_val);
-                                        self.constant_pool.len() - 1
-                                    }
-                                };
-
-                            self.add_inst(IrOp::SetProperty {
-                                obj: compiled_accessor,
-                                key: hash_idx,
-                                val: compiled_value,
-                            });
-                        } else {
-                            panic!("AST Error: Static property assignment requires Ast::Value");
-                        }
+                        panic!("AST Error: Static property assignment requires Ast::Value");
                     }
 
                     0
@@ -1338,13 +1333,7 @@ impl Compiler {
 
                 let module_fun = self.compile_module(source);
 
-                let fun_idx = match self.constant_pool.iter().position(|c| *c == module_fun) {
-                    Some(idx) => idx,
-                    None => {
-                        self.constant_pool.push(module_fun);
-                        self.constant_pool.len() - 1
-                    }
-                };
+                let fun_idx = self.get_or_add_constant(module_fun);
 
                 let module_reg = self.next_free_address();
 
@@ -1365,13 +1354,7 @@ impl Compiler {
                     for name in map {
                         let reg = self.current().add_local(name.clone());
                         let hash = Value::Hash(Value::String(name.into()).get_hash());
-                        let hash_idx = match self.constant_pool.iter().position(|c| *c == hash) {
-                            Some(idx) => idx,
-                            None => {
-                                self.constant_pool.push(hash);
-                                self.constant_pool.len() - 1
-                            }
-                        };
+                        let hash_idx = self.get_or_add_constant(hash);
 
                         self.add_inst(IrOp::GetProperty {
                             dest: reg,
@@ -1392,12 +1375,12 @@ impl Compiler {
                         idx,
                     };
                 } else {
-                    self.constant_pool
-                        .push(Value::EnumDefinition(self.enums.len().try_into().unwrap()));
+                    let enum_val = Value::EnumDefinition(self.enums.len().try_into().unwrap());
+                    let idx = self.get_or_add_constant(enum_val);
                     self.enums.push(EnumDef {
                         name,
                         variants,
-                        idx: self.constant_pool.len() - 1,
+                        idx,
                     });
                 }
 
@@ -1482,14 +1465,7 @@ impl Compiler {
                                     let hash = Value::Hash(
                                         Value::String(Rc::new(field_def_name.clone())).get_hash(),
                                     );
-                                    let hash_idx =
-                                        match self.constant_pool.iter().position(|c| *c == hash) {
-                                            Some(idx) => idx,
-                                            None => {
-                                                self.constant_pool.push(hash);
-                                                self.constant_pool.len() - 1
-                                            }
-                                        };
+                                    let hash_idx = self.get_or_add_constant(hash);
 
                                     let field_reg = self.current().add_local(field_binding);
                                     self.add_inst(IrOp::GetProperty {
@@ -1517,14 +1493,7 @@ impl Compiler {
                                     val: b,
                                 }),
                                 _ => {
-                                    let idx = match self.constant_pool.iter().position(|x| x == &v)
-                                    {
-                                        Some(expr) => expr,
-                                        None => {
-                                            self.constant_pool.push(v);
-                                            self.constant_pool.len() - 1
-                                        }
-                                    };
+                                    let idx = self.get_or_add_constant(v);
                                     self.add_inst(IrOp::LoadConst { dest: val_reg, idx });
                                 }
                             }

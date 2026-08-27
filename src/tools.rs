@@ -197,15 +197,23 @@ impl LanguageTools {
         };
 
         let line = match opcode {
-            OpCode::Load => {
+            OpCode::LoadInt => format!("{:04} LOAD_INT", offset),
+            OpCode::LoadIntSmall => format!("{:04} LOAD_INT_S", offset),
+            OpCode::LoadDouble => format!("{:04} LOAD_DBL", offset),
+            OpCode::LoadBool => format!("{:04} LOAD_BOOL", offset),
+            OpCode::LoadConst => format!("{:04} LOAD_CONST", offset),
+            OpCode::LoadReg => {
                 if offset + 2 < code.len() {
                     let dest = code[offset + 1];
                     let src = code[offset + 2];
-                    format!("{:04} LOAD r{} r{}", offset, dest, src)
+                    format!("{:04} LOAD_REG r{} r{}", offset, dest, src)
                 } else {
-                    format!("{:04} LOAD (truncated)", offset)
+                    format!("{:04} LOAD_REG (truncated)", offset)
                 }
             }
+            OpCode::LoadFun => format!("{:04} LOAD_FUN", offset),
+            OpCode::LoadObject => format!("{:04} LOAD_OBJ", offset),
+            OpCode::LoadEnum => format!("{:04} LOAD_ENUM", offset),
             OpCode::Return => {
                 if offset + 1 < code.len() {
                     format!("{:04} RETURN r{}", offset, code[offset + 1])
@@ -232,15 +240,30 @@ impl LanguageTools {
 
         // Advance based on opcode byte length if known
         let len = match opcode {
-            OpCode::Load => 3,
-            OpCode::Return => 2,
-            OpCode::Binary => 5,
-            OpCode::Call => 4,
-            OpCode::Jump | OpCode::JumpNot => 3,
-            OpCode::Inc | OpCode::Dec => 2,
+            OpCode::LoadInt | OpCode::LoadDouble => 10,
+            OpCode::LoadIntSmall | OpCode::LoadBool | OpCode::LoadReg | OpCode::LoadGlobal => 3,
+            OpCode::LoadConst | OpCode::LoadFun | OpCode::LoadObject | OpCode::LoadNative => 4,
+            OpCode::Return | OpCode::Inc | OpCode::Dec => 2,
+            OpCode::Binary | OpCode::GetProperty | OpCode::SetProperty => 5,
+            OpCode::Call => {
+                if offset + 3 < code.len() {
+                    4 + code[offset + 3] as usize
+                } else {
+                    4
+                }
+            }
+            OpCode::TailCall => {
+                if offset + 2 < code.len() {
+                    3 + code[offset + 2] as usize
+                } else {
+                    3
+                }
+            }
+            OpCode::Jump => 3,
+            OpCode::JumpNot | OpCode::GetPropertyDyn | OpCode::SetPropertyDyn => 4,
+            OpCode::MatchEnum => 6,
             _ => 1,
         };
-
         (offset + len.min(code.len() - offset).max(1), line)
     }
 }

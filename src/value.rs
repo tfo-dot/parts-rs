@@ -95,6 +95,7 @@ impl Hash for Value {
     }
 }
 
+impl Eq for Value {}
 use std::ops::Rem;
 
 impl Rem for Value {
@@ -791,9 +792,10 @@ impl PartialEq for NativeFunction {
     }
 }
 
-use core::fmt::Debug;
-impl Debug for NativeFunction {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+impl Eq for NativeFunction {}
+
+impl std::fmt::Debug for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "NativeFunction - {}", self.name)
     }
 }

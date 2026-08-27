@@ -1,5 +1,6 @@
 use crate::compiler::Compiler;
 use crate::emitter::Emitter;
+use crate::optimize::{AstOptimizer, IrOptimizer};
 use crate::parser::Parser;
 use crate::value::{NativeFunction, Value};
 use crate::vm::VM;
@@ -59,12 +60,18 @@ impl Engine {
 
     pub fn run(&self, source: &str) -> Result<ExecutionResult, String> {
         let mut parser = Parser::new(source.to_string());
-        let ast = parser
+        let mut ast = parser
             .parse_all()
             .map_err(|e| format!("Parser error: {}", e))?;
 
+        let optimizer = AstOptimizer::new();
+        let mut changed = true;
+        while changed {
+            changed = optimizer.optimize_all(&mut ast);
+        }
+
         let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
-        let ast = compiler.compile_all(ast).map_err(|e| {
+        let ir = compiler.compile_all(ast).map_err(|e| {
             format!(
                 "Compiler error:\n{}",
                 e.iter()
@@ -80,7 +87,8 @@ impl Engine {
             )
         })?;
 
-        let bytecode = Emitter {}.emit(ast);
+        let ir = IrOptimizer::optimize(ir);
+        let bytecode = Emitter {}.emit(ir);
 
         let mut vm = VM::with_natives(bytecode, compiler.constant_pool, self.natives.clone());
         let value = vm.run().map_err(|e| format!("VM error: {}", e))?;
