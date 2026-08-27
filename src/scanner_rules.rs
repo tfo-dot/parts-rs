@@ -50,7 +50,7 @@ impl ScannerRule {
                         return Ok(vec![Token {
                             kind: TokenType::Operator,
                             lexeme: name.clone(),
-                            span: span,
+                            span,
                         }]);
                     }
 
@@ -148,7 +148,7 @@ impl ScannerRule {
                     let mut token = Token {
                         kind: TokenType::Keyword,
                         lexeme: runs.to_string(),
-                        span: span,
+                        span,
                     };
 
                     if mappings.contains_key(&token.lexeme) {
@@ -256,7 +256,7 @@ impl ScannerRule {
                     Ok(vec![Token {
                         kind: TokenType::String,
                         lexeme: unescaped,
-                        span: span,
+                        span,
                     }])
                 })),
                 skip: false,

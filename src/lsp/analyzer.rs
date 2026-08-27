@@ -96,7 +96,8 @@ impl Document {
 
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let import_path = self.get_import_path();
-        let report = LanguageTools::check_with_import_path(&self.text, Some(&self.uri), import_path);
+        let report =
+            LanguageTools::check_with_import_path(&self.text, Some(&self.uri), import_path);
 
         let mut diagnostics = Vec::new();
         for diag in report.diagnostics {
@@ -120,10 +121,10 @@ impl Document {
             };
 
             let mut msg = diag.message;
-            if let Some(ref label) = diag.label {
-                if !msg.contains(label) {
-                    msg = format!("{}: {}", msg, label);
-                }
+            if let Some(ref label) = diag.label
+                && !msg.contains(label)
+            {
+                msg = format!("{}: {}", msg, label);
             }
             if let Some(ref help) = diag.help {
                 msg = format!("{}\nhelp: {}", msg, help);
@@ -149,39 +150,77 @@ impl Document {
 
         // 1. Keywords documentation
         let doc = match word.as_str() {
-            "let" => Some("### `let` declaration\nDeclares a mutable variable or function.\n\n```parts\nlet x = 42;\nlet add(a, b) = a + b;\n```"),
-            "fun" => Some("### `fun` anonymous function\nDefines a lambda / closure expression.\n\n```parts\nlet square = fun(x) = x * x;\n```"),
-            "enum" => Some("### `enum` definition\nDefines an algebraic data type with tagged variants.\n\n```parts\nenum Direction {\n    North(power),\n    South(power),\n    Stationary\n}\n```"),
-            "match" => Some("### `match` expression\nPattern matches on enum variants, values, and wildcards.\n\n```parts\nmatch result {\n    Ok(v) => v,\n    Err(e) => 0,\n    _ => 0\n}\n```"),
-            "if" => Some("### `if` conditional\nEvaluates a branch based on boolean truthiness.\n\n```parts\nif score >= 90 {\n    println(\"A\");\n} else {\n    println(\"B\");\n}\n```"),
+            "let" => Some(
+                "### `let` declaration\nDeclares a mutable variable or function.\n\n```parts\nlet x = 42;\nlet add(a, b) = a + b;\n```",
+            ),
+            "fun" => Some(
+                "### `fun` anonymous function\nDefines a lambda / closure expression.\n\n```parts\nlet square = fun(x) = x * x;\n```",
+            ),
+            "enum" => Some(
+                "### `enum` definition\nDefines an algebraic data type with tagged variants.\n\n```parts\nenum Direction {\n    North(power),\n    South(power),\n    Stationary\n}\n```",
+            ),
+            "match" => Some(
+                "### `match` expression\nPattern matches on enum variants, values, and wildcards.\n\n```parts\nmatch result {\n    Ok(v) => v,\n    Err(e) => 0,\n    _ => 0\n}\n```",
+            ),
+            "if" => Some(
+                "### `if` conditional\nEvaluates a branch based on boolean truthiness.\n\n```parts\nif score >= 90 {\n    println(\"A\");\n} else {\n    println(\"B\");\n}\n```",
+            ),
             "else" => Some("### `else` branch\nFallback branch for `if` statement."),
-            "for" => Some("### `for` loop\nActs as a while-loop or collection iterator.\n\n```parts\nfor i < 10 { i = i + 1; }\nfor item in collection { ... }\n```"),
+            "for" => Some(
+                "### `for` loop\nActs as a while-loop or collection iterator.\n\n```parts\nfor i < 10 { i = i + 1; }\nfor item in collection { ... }\n```",
+            ),
             "in" => Some("### `in` iterator clause\nIterates over strings, objects, or arrays."),
-            "return" => Some("### `return` statement\nReturns a value from the current function frame."),
+            "return" => {
+                Some("### `return` statement\nReturns a value from the current function frame.")
+            }
             "break" => Some("### `break` statement\nTerminates the nearest enclosing `for` loop."),
-            "continue" => Some("### `continue` statement\nSkips to the next iteration of the nearest loop."),
-            "part" => Some("### `part` macro declaration\nDefines a hygienic syntactic macro.\n\n```parts\npart log {\n    (@msg) => { println(@msg); }\n}\n```"),
-            "import" => Some("### `import` statement\nImports standard library modules or local files.\n\n```parts\nlet std = import `@std/std.pts`;\n```"),
+            "continue" => {
+                Some("### `continue` statement\nSkips to the next iteration of the nearest loop.")
+            }
+            "part" => Some(
+                "### `part` macro declaration\nDefines a hygienic syntactic macro.\n\n```parts\npart log {\n    (@msg) => { println(@msg); }\n}\n```",
+            ),
+            "import" => Some(
+                "### `import` statement\nImports standard library modules or local files.\n\n```parts\nlet std = import `@std/std.pts`;\n```",
+            ),
             "true" | "false" => Some("### Boolean literal"),
             "Int" => Some("### `Int` primitive type\n64-bit signed integer (`i64`)."),
-            "Double" => Some("### `Double` primitive type\n64-bit IEEE 754 floating point number (`f64`)."),
+            "Double" => {
+                Some("### `Double` primitive type\n64-bit IEEE 754 floating point number (`f64`).")
+            }
             "Bool" => Some("### `Bool` primitive type\nBoolean truth value (`true` or `false`)."),
             "String" => Some("### `String` primitive type\nReference-counted UTF-8 string."),
             "Bytes" => Some("### `Bytes` buffer type\nMutable byte buffer (`Vec<u8>`)."),
-            "Result" => Some("### `Result` enum\nRepresents success (`Result::Ok(val)`) or failure (`Result::Err(err)`)."),
-            "Option" => Some("### `Option` enum\nRepresents an optional value (`Option::Some(val)`) or absence (`Option::None`)."),
+            "Result" => Some(
+                "### `Result` enum\nRepresents success (`Result::Ok(val)`) or failure (`Result::Err(err)`).",
+            ),
+            "Option" => Some(
+                "### `Option` enum\nRepresents an optional value (`Option::Some(val)`) or absence (`Option::None`).",
+            ),
             "Ok" => Some("### `Result::Ok` variant\nWraps a successful value: `Result::Ok(val)`"),
             "Err" => Some("### `Result::Err` variant\nWraps an error value: `Result::Err(err)`"),
-            "Some" => Some("### `Option::Some` variant\nWraps an existing value: `Option::Some(val)`"),
+            "Some" => {
+                Some("### `Option::Some` variant\nWraps an existing value: `Option::Some(val)`")
+            }
             "None" => Some("### `Option::None` variant\nRepresents no value: `Option::None`"),
-            "println" => Some("### `println(...)`\nPrints arguments to standard output followed by a newline."),
-            "print" => Some("### `print(...)`\nPrints arguments to standard output without trailing newline."),
+            "println" => Some(
+                "### `println(...)`\nPrints arguments to standard output followed by a newline.",
+            ),
+            "print" => Some(
+                "### `print(...)`\nPrints arguments to standard output without trailing newline.",
+            ),
             "input" => Some("### `input()`\nReads a line from standard input as a `String`."),
-            "exec" => Some("### `std.sys.exec(cmd)`\nExecutes a system shell command and returns the output."),
+            "exec" => Some(
+                "### `std.sys.exec(cmd)`\nExecutes a system shell command and returns the output.",
+            ),
             "env" => Some("### `std.sys.env(key)`\nReads an environment variable."),
             "len" => Some("### `.len()`\nReturns the length of a string, object, or byte buffer."),
-            "unwrap" => Some("### `.unwrap()`\nUnwraps `Result::Ok` or `Option::Some`, panicking on failure."),
-            "unwrap_or" => Some("### `.unwrap_or(default)`\nUnwraps `Result` / `Option` or returns the fallback default value."),
+            "unwrap" => Some(
+                "### `.unwrap()`\nUnwraps `Result::Ok` or `Option::Some`, panicking on failure.",
+            ),
+            "unwrap_or" => Some(
+                "### `.unwrap_or(default)`\nUnwraps `Result` / `Option` or returns the fallback default value.",
+            ),
             "is_ok" => Some("### `.is_ok()`\nReturns `true` if the Result is `Ok`."),
             "is_err" => Some("### `.is_err()`\nReturns `true` if the Result is `Err`."),
             "is_some" => Some("### `.is_some()`\nReturns `true` if the Option is `Some`."),
@@ -210,7 +249,10 @@ impl Document {
                                 _ => format!("let {}", name),
                             };
                             return Some(Hover {
-                                contents: MarkupContent::markdown(format!("```parts\n{}\n```\nUser-defined declaration.", detail)),
+                                contents: MarkupContent::markdown(format!(
+                                    "```parts\n{}\n```\nUser-defined declaration.",
+                                    detail
+                                )),
                                 range: None,
                             });
                         }
@@ -241,10 +283,18 @@ impl Document {
                                 let sig = if variant.fields.is_empty() {
                                     format!("{}::{}", name, variant.name)
                                 } else {
-                                    format!("{}::{}({})", name, variant.name, variant.fields.join(", "))
+                                    format!(
+                                        "{}::{}({})",
+                                        name,
+                                        variant.name,
+                                        variant.fields.join(", ")
+                                    )
                                 };
                                 return Some(Hover {
-                                    contents: MarkupContent::markdown(format!("```parts\n{}\n```\nVariant of enum `{}`.", sig, name)),
+                                    contents: MarkupContent::markdown(format!(
+                                        "```parts\n{}\n```\nVariant of enum `{}`.",
+                                        sig, name
+                                    )),
                                     range: None,
                                 });
                             }
@@ -266,16 +316,40 @@ impl Document {
             ("let", "let declaration", "let ${1:name} = ${2:value};"),
             ("fun", "anonymous function", "fun(${1:args}) = ${2:body}"),
             ("if", "if statement", "if ${1:condition} {\n    $0\n}"),
-            ("if else", "if-else statement", "if ${1:condition} {\n    $2\n} else {\n    $0\n}"),
+            (
+                "if else",
+                "if-else statement",
+                "if ${1:condition} {\n    $2\n} else {\n    $0\n}",
+            ),
             ("for", "for loop", "for ${1:condition} {\n    $0\n}"),
-            ("for in", "for iterator", "for ${1:item} in ${2:collection} {\n    $0\n}"),
-            ("match", "match expression", "match ${1:target} {\n    ${2:pattern} => ${3:result},\n    _ => $0\n}"),
-            ("enum", "enum definition", "enum ${1:Name} {\n    ${2:Variant}\n}"),
+            (
+                "for in",
+                "for iterator",
+                "for ${1:item} in ${2:collection} {\n    $0\n}",
+            ),
+            (
+                "match",
+                "match expression",
+                "match ${1:target} {\n    ${2:pattern} => ${3:result},\n    _ => $0\n}",
+            ),
+            (
+                "enum",
+                "enum definition",
+                "enum ${1:Name} {\n    ${2:Variant}\n}",
+            ),
             ("return", "return statement", "return ${1:value};"),
             ("break", "break statement", "break;"),
             ("continue", "continue statement", "continue;"),
-            ("import", "import statement", "let ${1:std} = import `@std/${2:std}.pts`;"),
-            ("part", "macro definition", "part ${1:name} {\n    (${2:@arg}) => {\n        $0\n    }\n}"),
+            (
+                "import",
+                "import statement",
+                "let ${1:std} = import `@std/${2:std}.pts`;",
+            ),
+            (
+                "part",
+                "macro definition",
+                "part ${1:name} {\n    (${2:@arg}) => {\n        $0\n    }\n}",
+            ),
         ];
 
         for (kw, detail, snippet) in keywords {
@@ -291,27 +365,132 @@ impl Document {
 
         // 2. Builtin types and variants
         let builtins = [
-            ("Result::Ok", CompletionItemKind::ENUM_MEMBER, "Result::Ok(${1:val})", "Ok variant"),
-            ("Result::Err", CompletionItemKind::ENUM_MEMBER, "Result::Err(${1:err})", "Err variant"),
-            ("Option::Some", CompletionItemKind::ENUM_MEMBER, "Option::Some(${1:val})", "Some variant"),
-            ("Option::None", CompletionItemKind::ENUM_MEMBER, "Option::None", "None variant"),
-            ("println", CompletionItemKind::FUNCTION, "println(${1:args});", "Print with newline"),
-            ("print", CompletionItemKind::FUNCTION, "print(${1:args});", "Print without newline"),
-            ("input", CompletionItemKind::FUNCTION, "input()", "Read from stdin"),
-            ("is_ok", CompletionItemKind::METHOD, "is_ok()", "Check Result::Ok"),
-            ("is_err", CompletionItemKind::METHOD, "is_err()", "Check Result::Err"),
-            ("is_some", CompletionItemKind::METHOD, "is_some()", "Check Option::Some"),
-            ("is_none", CompletionItemKind::METHOD, "is_none()", "Check Option::None"),
-            ("unwrap", CompletionItemKind::METHOD, "unwrap()", "Unwrap value or panic"),
-            ("unwrap_or", CompletionItemKind::METHOD, "unwrap_or(${1:default})", "Unwrap with fallback"),
-            ("unwrap_err", CompletionItemKind::METHOD, "unwrap_err()", "Unwrap error message"),
-            ("expect", CompletionItemKind::METHOD, "expect(${1:\"msg\"})", "Unwrap with message"),
-            ("len", CompletionItemKind::METHOD, "len()", "Length of collection"),
-            ("join", CompletionItemKind::METHOD, "join(${1:sep})", "Join string"),
-            ("to_hex", CompletionItemKind::METHOD, "to_hex()", "Hex representation of bytes"),
-            ("to_uppercase", CompletionItemKind::METHOD, "to_uppercase()", "Uppercase string"),
-            ("to_lowercase", CompletionItemKind::METHOD, "to_lowercase()", "Lowercase string"),
-            ("push", CompletionItemKind::METHOD, "push(${1:byte})", "Append byte to buffer"),
+            (
+                "Result::Ok",
+                CompletionItemKind::ENUM_MEMBER,
+                "Result::Ok(${1:val})",
+                "Ok variant",
+            ),
+            (
+                "Result::Err",
+                CompletionItemKind::ENUM_MEMBER,
+                "Result::Err(${1:err})",
+                "Err variant",
+            ),
+            (
+                "Option::Some",
+                CompletionItemKind::ENUM_MEMBER,
+                "Option::Some(${1:val})",
+                "Some variant",
+            ),
+            (
+                "Option::None",
+                CompletionItemKind::ENUM_MEMBER,
+                "Option::None",
+                "None variant",
+            ),
+            (
+                "println",
+                CompletionItemKind::FUNCTION,
+                "println(${1:args});",
+                "Print with newline",
+            ),
+            (
+                "print",
+                CompletionItemKind::FUNCTION,
+                "print(${1:args});",
+                "Print without newline",
+            ),
+            (
+                "input",
+                CompletionItemKind::FUNCTION,
+                "input()",
+                "Read from stdin",
+            ),
+            (
+                "is_ok",
+                CompletionItemKind::METHOD,
+                "is_ok()",
+                "Check Result::Ok",
+            ),
+            (
+                "is_err",
+                CompletionItemKind::METHOD,
+                "is_err()",
+                "Check Result::Err",
+            ),
+            (
+                "is_some",
+                CompletionItemKind::METHOD,
+                "is_some()",
+                "Check Option::Some",
+            ),
+            (
+                "is_none",
+                CompletionItemKind::METHOD,
+                "is_none()",
+                "Check Option::None",
+            ),
+            (
+                "unwrap",
+                CompletionItemKind::METHOD,
+                "unwrap()",
+                "Unwrap value or panic",
+            ),
+            (
+                "unwrap_or",
+                CompletionItemKind::METHOD,
+                "unwrap_or(${1:default})",
+                "Unwrap with fallback",
+            ),
+            (
+                "unwrap_err",
+                CompletionItemKind::METHOD,
+                "unwrap_err()",
+                "Unwrap error message",
+            ),
+            (
+                "expect",
+                CompletionItemKind::METHOD,
+                "expect(${1:\"msg\"})",
+                "Unwrap with message",
+            ),
+            (
+                "len",
+                CompletionItemKind::METHOD,
+                "len()",
+                "Length of collection",
+            ),
+            (
+                "join",
+                CompletionItemKind::METHOD,
+                "join(${1:sep})",
+                "Join string",
+            ),
+            (
+                "to_hex",
+                CompletionItemKind::METHOD,
+                "to_hex()",
+                "Hex representation of bytes",
+            ),
+            (
+                "to_uppercase",
+                CompletionItemKind::METHOD,
+                "to_uppercase()",
+                "Uppercase string",
+            ),
+            (
+                "to_lowercase",
+                CompletionItemKind::METHOD,
+                "to_lowercase()",
+                "Lowercase string",
+            ),
+            (
+                "push",
+                CompletionItemKind::METHOD,
+                "push(${1:byte})",
+                "Append byte to buffer",
+            ),
         ];
 
         for (label, kind, snippet, detail) in builtins {

@@ -138,25 +138,25 @@ impl Value {
     }
 
     pub fn is_ok(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Value::EnumField {
                 const_idx: 0,
                 tag: 0,
                 ..
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
 
     pub fn is_err(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Value::EnumField {
                 const_idx: 0,
                 tag: 1,
                 ..
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
     pub fn some(val: impl Into<Value>) -> Value {
         Value::EnumField {
@@ -178,25 +178,25 @@ impl Value {
     }
 
     pub fn is_some(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Value::EnumField {
                 const_idx: 1,
                 tag: 0,
                 ..
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
 
     pub fn is_none(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Value::EnumField {
                 const_idx: 1,
                 tag: 1,
                 ..
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
     pub fn bytes(data: Vec<u8>) -> Value {
         Value::Bytes(Rc::new(RefCell::new(data)))
@@ -528,14 +528,14 @@ impl From<&str> for Value {
 
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        return match (self, other) {
+        match (self, other) {
             (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
             (Value::Int(a), Value::Double(b)) => (*a as f64).partial_cmp(b),
             (Value::Double(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
             (Value::Double(a), Value::Double(b)) => a.partial_cmp(b),
             (Value::String(a), Value::String(b)) => a.partial_cmp(b),
             _ => Some(std::cmp::Ordering::Equal),
-        };
+        }
     }
 }
 
@@ -548,7 +548,7 @@ impl Display for Value {
             Value::String(s) => write!(f, "{}", s), // Quoted for clarity
             Value::Ref(r) => write!(f, "&{}", r),   // Prefixed with & to show it's a ref
             Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
-            Value::NativeFun(_) => write!(f, "{}", "<native fun>"),
+            Value::NativeFun(_) => write!(f, "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
             Value::EnumDefinition(idx) => write!(f, "<enum def #{}>", idx),
@@ -654,14 +654,14 @@ impl<T: FromValue> FromValue for Vec<T> {
 
             let len = obj.len();
 
-            let mut vec = Vec::with_capacity(len as usize);
+            let mut vec = Vec::with_capacity(len);
             for i in 0..(len as i64) {
                 let int_key = Value::Int(i).get_hash();
 
                 if let Some(item_val) = obj.get(&int_key) {
                     vec.push(T::from_value(item_val)?);
                 } else {
-                    return Err(format!("Expected property at key: {}, got none", i).into());
+                    return Err(format!("Expected property at key: {}, got none", i));
                 }
             }
 
@@ -807,8 +807,8 @@ impl StdDefinition {
     pub fn get_core() -> Self {
         use crate::std::StdModule;
 
-        return StdDefinition {
+        StdDefinition {
             functions: StdModule::get_core().functions,
-        };
+        }
     }
 }

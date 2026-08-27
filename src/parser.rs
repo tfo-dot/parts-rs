@@ -70,7 +70,11 @@ impl Error {
         }
     }
 
-    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+    pub fn to_diagnostic(
+        &self,
+        source: Option<&str>,
+        file: Option<&str>,
+    ) -> crate::diagnostic::Diagnostic {
         match self {
             Error::ScannerError(err) => err.to_diagnostic(source, file),
             Error::TokenMismatch(expected, actual) => {
@@ -90,11 +94,18 @@ impl Error {
                 };
 
                 let act_str = actual.user_friendly_name();
-                let len = if actual.lexeme.is_empty() { 1 } else { actual.lexeme.len() };
-                let mut diag = crate::diagnostic::Diagnostic::error(format!("expected {}, found {}", exp_str, act_str))
-                    .with_location(actual.span.line, actual.span.column)
-                    .with_length(len)
-                    .with_label(format!("expected {}", exp_str));
+                let len = if actual.lexeme.is_empty() {
+                    1
+                } else {
+                    actual.lexeme.len()
+                };
+                let mut diag = crate::diagnostic::Diagnostic::error(format!(
+                    "expected {}, found {}",
+                    exp_str, act_str
+                ))
+                .with_location(actual.span.line, actual.span.column)
+                .with_length(len)
+                .with_label(format!("expected {}", exp_str));
 
                 if let Some(src) = source {
                     diag = diag.with_source(src);
@@ -110,7 +121,11 @@ impl Error {
                 } else {
                     format!("unexpected {}", token.user_friendly_name())
                 };
-                let len = if token.lexeme.is_empty() { 1 } else { token.lexeme.len() };
+                let len = if token.lexeme.is_empty() {
+                    1
+                } else {
+                    token.lexeme.len()
+                };
                 let mut diag = crate::diagnostic::Diagnostic::error(msg.clone())
                     .with_location(token.span.line, token.span.column)
                     .with_length(len)
@@ -173,9 +188,7 @@ impl Parser {
         let mut buf: Vec<Ast> = vec![];
 
         loop {
-            if self.last_token.kind == TokenType::Special
-                && self.last_token.lexeme == "EOF".to_string()
-            {
+            if self.last_token.kind == TokenType::Special && self.last_token.lexeme == "EOF" {
                 break;
             }
 
@@ -372,7 +385,7 @@ impl Parser {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn expect_kind(&mut self, kind: TokenType) -> Result<Token, Error> {

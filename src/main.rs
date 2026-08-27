@@ -59,7 +59,9 @@ fn main() {
     let input_path = match cli.input {
         Some(ref path) => path.clone(),
         None => {
-            eprintln!("error: no input file provided (use --help for usage, or --lsp to start language server)");
+            eprintln!(
+                "error: no input file provided (use --help for usage, or --lsp to start language server)"
+            );
             std::process::exit(1);
         }
     };
@@ -70,7 +72,9 @@ fn main() {
         let content = match fs::read_to_string(&input_path) {
             Ok(c) => {
                 if cli.shebang {
-                    c.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(c)
+                    c.split_once('\n')
+                        .map(|(_, rest)| rest.to_string())
+                        .unwrap_or(c)
                 } else {
                     c
                 }
@@ -177,7 +181,9 @@ fn get_code(config: Cli) -> CompilerOutput {
     let content = match fs::read_to_string(&raw_path) {
         Ok(c) => {
             if config.shebang {
-                c.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(c)
+                c.split_once('\n')
+                    .map(|(_, rest)| rest.to_string())
+                    .unwrap_or(c)
             } else {
                 c
             }
@@ -254,7 +260,12 @@ fn get_code(config: Cli) -> CompilerOutput {
         println!();
     }
 
-    let mut c = Compiler::new(raw_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    let mut c = Compiler::new(
+        raw_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
 
     let start_time_p = Instant::now();
 
@@ -312,10 +323,10 @@ fn get_code(config: Cli) -> CompilerOutput {
         println!();
     }
 
-    return CompilerOutput {
+    CompilerOutput {
         code: bc,
         consts: c.constant_pool,
-    };
+    }
 }
 
 #[repr(C)]
@@ -389,8 +400,10 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
 
     let content = if config.shebang {
         let str_content = String::from_utf8(source_content).unwrap_or_default();
-        let split = str_content.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(str_content);
-        split
+        str_content
+            .split_once('\n')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or(str_content)
     } else {
         String::from_utf8(source_content).unwrap_or_default()
     };
@@ -417,7 +430,13 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
         }
     }
 
-    let mut c = Compiler::new(source_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    let mut c = Compiler::new(
+        source_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
+
     let mut ir = match c.compile_all(ast) {
         Ok(ir) => ir,
         Err(errors) => {
@@ -434,10 +453,10 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
 
     let bc = Emitter {}.emit(ir);
     save_cache(&cache_path, &bc, c.constant_pool.clone(), current_hash);
-    return CompilerOutput {
+    CompilerOutput {
         code: bc,
         consts: c.constant_pool,
-    };
+    }
 }
 
 struct CompilerOutput {

@@ -61,7 +61,10 @@ fn test_report_collection() {
 #[test]
 fn test_scanner_error_diagnostics() {
     let source = "let s = \"unterminated string";
-    let mut scanner = Scanner::new(parts::scanner_rules::ScannerRule::get_default_rules(), source.to_string());
+    let mut scanner = Scanner::new(
+        parts::scanner_rules::ScannerRule::get_default_rules(),
+        source.to_string(),
+    );
     let err = loop {
         match scanner.get_next() {
             Ok(tok) if tok.kind == TokenType::Special && tok.lexeme == "EOF" => break None,
@@ -126,7 +129,10 @@ fn test_token_friendly_names() {
     let eof_tok = Token {
         kind: TokenType::Special,
         lexeme: "EOF".to_string(),
-        span: Span { line: 1, column: 10 },
+        span: Span {
+            line: 1,
+            column: 10,
+        },
     };
     assert_eq!(eof_tok.user_friendly_name(), "end of file");
 }

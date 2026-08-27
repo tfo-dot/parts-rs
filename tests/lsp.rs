@@ -1,8 +1,6 @@
 use parts::lsp::{
-    protocol::{
-        CompletionItem, Diagnostic, DocumentSymbol, Hover, Location, TextEdit,
-    },
     LspServer,
+    protocol::{CompletionItem, Diagnostic, DocumentSymbol, Hover, Location, TextEdit},
 };
 
 #[test]
@@ -22,10 +20,22 @@ fn test_lsp_initialize() {
     assert_eq!(resps.len(), 1);
     let val: serde_json::Value = serde_json::from_str(&resps[0]).unwrap();
     assert_eq!(val["id"], 1);
-    assert!(val["result"]["capabilities"]["hoverProvider"].as_bool().unwrap());
+    assert!(
+        val["result"]["capabilities"]["hoverProvider"]
+            .as_bool()
+            .unwrap()
+    );
     assert!(val["result"]["capabilities"]["completionProvider"].is_object());
-    assert!(val["result"]["capabilities"]["definitionProvider"].as_bool().unwrap());
-    assert!(val["result"]["capabilities"]["documentSymbolProvider"].as_bool().unwrap());
+    assert!(
+        val["result"]["capabilities"]["definitionProvider"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        val["result"]["capabilities"]["documentSymbolProvider"]
+            .as_bool()
+            .unwrap()
+    );
 }
 
 #[test]

@@ -28,10 +28,14 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::FrameUnderflow => write!(f, "call stack underflow"),
-            Error::UnexpectedTypeLoad(op) => write!(f, "unexpected value type for load operation ({:?})", op),
+            Error::UnexpectedTypeLoad(op) => {
+                write!(f, "unexpected value type for load operation ({:?})", op)
+            }
             Error::UnexpectedTypeCall => write!(f, "attempted to call a non-callable value"),
             Error::UnexpectedType => write!(f, "unexpected value type for operation"),
-            Error::PropertyNotFound(hash) => write!(f, "property with hash {:#018x} not found", hash),
+            Error::PropertyNotFound(hash) => {
+                write!(f, "property with hash {:#018x} not found", hash)
+            }
             Error::NativeFunctionFailed(msg) => write!(f, "native function failed: {}", msg),
         }
     }
@@ -122,10 +126,10 @@ impl VM {
                 break;
             }
 
-            if let Some(current_frame) = self.frames.last() {
-                if current_frame.ip >= current_frame.bytecode.len() {
-                    break;
-                }
+            if let Some(current_frame) = self.frames.last()
+                && current_frame.ip >= current_frame.bytecode.len()
+            {
+                break;
             }
 
             let opcode = self.read_byte()?;
@@ -521,13 +525,13 @@ impl VM {
             Value::Int(raw) => raw.abs() > 0,
             Value::Double(raw) => raw.abs() > 0.0,
             Value::Bool(raw) => raw,
-            Value::String(raw) => raw.len() > 0,
+            Value::String(raw) => !raw.is_empty(),
             Value::Ref(_) | Value::Hash(_) => unreachable!(),
             Value::Fun { .. } => true,
             Value::NativeFun(_) => true,
-            Value::Object(items) => items.borrow().len() > 0,
+            Value::Object(items) => !items.borrow().is_empty(),
             Value::EnumDefinition(_) | Value::EnumField { .. } => true,
-            Value::Bytes(bytes) => bytes.borrow().len() > 0,
+            Value::Bytes(bytes) => !bytes.borrow().is_empty(),
         }
     }
 

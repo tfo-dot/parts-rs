@@ -16,6 +16,12 @@ pub struct Engine {
     natives: Vec<NativeFunction>,
 }
 
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         Engine {

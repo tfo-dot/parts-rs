@@ -310,15 +310,15 @@ impl PostfixRule {
                             break;
                         }
 
-                        if parser.match_operator("AT") {
-                            if parser.peek()?.kind == TokenType::Identifier {
-                                let mut temp = parser.advance()?;
+                        if parser.match_operator("AT")
+                            && parser.peek()?.kind == TokenType::Identifier
+                        {
+                            let mut temp = parser.advance()?;
 
-                                temp.lexeme = format!("@{}", temp.lexeme);
+                            temp.lexeme = format!("@{}", temp.lexeme);
 
-                                macro_call.push(temp);
-                                continue;
-                            }
+                            macro_call.push(temp);
+                            continue;
                         }
 
                         macro_call.push(parser.advance()?);
@@ -336,31 +336,27 @@ impl PostfixRule {
                 advance_token: true,
                 rule: Arc::new(|parser| parser.check_operator("DOUBLE_COLON")),
                 parse: Arc::new(|parser, ast| {
-                    if let Ast::Value(v) = ast {
-                        if let Value::Ref(name) = v {
-                            let tag = parser.expect_kind(TokenType::Identifier)?.lexeme;
+                    if let Ast::Value(Value::Ref(name)) = ast {
+                        let tag = parser.expect_kind(TokenType::Identifier)?.lexeme;
 
-                            let mut fields = vec![];
+                        let mut fields = vec![];
 
-                            if parser.check_operator("LEFT_PAREN") {
-                                let _ = parser.advance();
-                                loop {
-                                    fields.push(parser.parse()?);
+                        if parser.check_operator("LEFT_PAREN") {
+                            let _ = parser.advance();
+                            loop {
+                                fields.push(parser.parse()?);
 
-                                    if !parser.match_operator("COMMA") {
-                                        break;
-                                    }
+                                if !parser.match_operator("COMMA") {
+                                    break;
                                 }
-
-                                parser.expect_operator("RIGHT_PAREN")?;
                             }
 
-                            Ok(Ast::Value(Value::EnumField { name, tag, fields }))
-                        } else {
-                            return Err(ParserError::RuleNotFound);
+                            parser.expect_operator("RIGHT_PAREN")?;
                         }
+
+                        Ok(Ast::Value(Value::EnumField { name, tag, fields }))
                     } else {
-                        return Err(ParserError::RuleNotFound);
+                        Err(ParserError::RuleNotFound)
                     }
                 }),
             },

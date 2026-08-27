@@ -35,7 +35,11 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
-    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+    pub fn to_diagnostic(
+        &self,
+        source: Option<&str>,
+        file: Option<&str>,
+    ) -> crate::diagnostic::Diagnostic {
         let level = match self.level {
             ErrorLevel::Error => crate::diagnostic::DiagnosticLevel::Error,
             ErrorLevel::Warning => crate::diagnostic::DiagnosticLevel::Warning,
@@ -79,7 +83,7 @@ struct Context {
 
 impl Context {
     fn new() -> Self {
-        return Self {
+        Self {
             scopes: vec![FxHashMap::default()],
             scope_bases: vec![0],
             top_level_names: FxHashMap::default(),
@@ -88,7 +92,7 @@ impl Context {
             local_count: 0,
 
             ir_buff: vec![],
-        };
+        }
     }
 
     fn resolve_local(&mut self, name: &str) -> Option<u8> {
@@ -264,7 +268,6 @@ impl Compiler {
             enums: vec![],
         };
 
-
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
             variants: vec![
@@ -331,7 +334,7 @@ impl Compiler {
     fn next_free_address(&mut self) -> u8 {
         let address = self.current().next_free_register;
         self.current().next_free_register += 1;
-        return address;
+        address
     }
 
     fn new_label(&mut self) -> usize {
@@ -343,8 +346,8 @@ impl Compiler {
     fn compile_module(&mut self, source: String) -> Value {
         let (raw_source, new_source_path) =
             if source.starts_with("@std/") || self.source.starts_with("@std") {
-                let virtual_path = if source.starts_with("@std/") {
-                    PathBuf::from(&source[5..])
+                let virtual_path = if let Some(stripped) = source.strip_prefix("@std/") {
+                    PathBuf::from(stripped)
                 } else {
                     self.source.join(&source)
                 };
@@ -357,10 +360,12 @@ impl Compiler {
 
                 let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
 
-                let file = crate::Assets::get(internal_path_str).expect(&format!(
-                    "Standard library module not found: {} (original: {})",
-                    internal_path_str, source
-                ));
+                let file = crate::Assets::get(internal_path_str).unwrap_or_else(|| {
+                    panic!(
+                        "Standard library module not found: {} (original: {})",
+                        internal_path_str, source
+                    )
+                });
                 let content =
                     String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
 
@@ -393,7 +398,11 @@ impl Compiler {
         let import_ast = match p.parse_all() {
             Ok(ast) => ast,
             Err(e) => {
-                self.error(0, 0, format!("syntax error in imported module '{}': {}", source, e));
+                self.error(
+                    0,
+                    0,
+                    format!("syntax error in imported module '{}': {}", source, e),
+                );
                 return Value::Fun {
                     arity: 0,
                     body: vec![],
@@ -507,11 +516,11 @@ impl Compiler {
         match ast {
             Ast::Value(val) => match val {
                 ParserValue::Ref(r) => {
-                    return if let Some(_) = self.std.functions.iter().find(|f| f.name == r) {
+                    if self.std.functions.iter().find(|f| f.name == r).is_some() {
                         vec![r]
                     } else {
                         vec![]
-                    };
+                    }
                 }
                 ParserValue::EnumField { fields, .. } => {
                     fields.into_iter().flat_map(|f| self.find_stds(f)).collect()
@@ -521,12 +530,11 @@ impl Compiler {
             Ast::Declare { name: _, value } => self.find_stds(*value),
             Ast::Object(entries) => entries
                 .iter()
-                .map(|(k, v)| {
+                .flat_map(|(k, v)| {
                     let mut res = self.find_stds(k.clone());
                     res.extend(self.find_stds(v.clone()));
                     res
                 })
-                .flatten()
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect(),
@@ -534,7 +542,7 @@ impl Compiler {
             Ast::Call { what, args } => self
                 .find_stds(*what)
                 .into_iter()
-                .chain(args.iter().map(|azt| self.find_stds(azt.clone())).flatten())
+                .chain(args.iter().flat_map(|azt| self.find_stds(azt.clone())))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect(),
@@ -581,8 +589,7 @@ impl Compiler {
                 .collect(),
             Ast::Block { code } => code
                 .iter()
-                .map(|azt| self.find_stds(azt.clone()))
-                .flatten()
+                .flat_map(|azt| self.find_stds(azt.clone()))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect(),
@@ -1129,11 +1136,11 @@ impl Compiler {
                 if let Ast::Set { name, value } = *access {
                     return self.compile(Ast::Set {
                         name: Box::new(Ast::Dot {
-                            accessor: accessor,
+                            accessor,
                             access: name,
-                            resolve: resolve,
+                            resolve,
                         }),
-                        value: value,
+                        value,
                     });
                 }
 
@@ -1184,93 +1191,88 @@ impl Compiler {
             }
 
             Ast::Set { name, value } => match *name {
-                Ast::Value(val) => match val {
-                    ParserValue::Ref(name) => {
-                        let dest = self.current().resolve_local(&name);
+                Ast::Value(ParserValue::Ref(name)) => {
+                    let dest = self.current().resolve_local(&name);
 
-                        let lhs_reg = dest.unwrap_or_else(|| self.current().add_local(name));
+                    let lhs_reg = dest.unwrap_or_else(|| self.current().add_local(name));
 
-                        if let Ast::Value(ParserValue::EnumField { name, tag, fields }) = *value {
-                            let (const_idx, tag_idx, args) =
-                                self.compile_enum_field(name, tag, fields);
-                            self.add_inst(IrOp::LoadEnumField {
+                    if let Ast::Value(ParserValue::EnumField { name, tag, fields }) = *value {
+                        let (const_idx, tag_idx, args) = self.compile_enum_field(name, tag, fields);
+                        self.add_inst(IrOp::LoadEnumField {
+                            dest: lhs_reg,
+                            enum_idx: const_idx,
+                            tag: tag_idx,
+                            args,
+                        });
+                    } else if let Ast::Value(raw) = *value {
+                        let v = self.convert_const(raw.clone());
+
+                        match v {
+                            Value::Int(i) => self.add_inst(IrOp::LoadInt {
                                 dest: lhs_reg,
-                                enum_idx: const_idx,
-                                tag: tag_idx,
-                                args,
-                            });
-                        } else if let Ast::Value(raw) = *value {
-                            let v = self.convert_const(raw.clone());
-
-                            match v {
-                                Value::Int(i) => self.add_inst(IrOp::LoadInt {
-                                    dest: lhs_reg,
-                                    val: i,
-                                }),
-                                Value::Double(d) => self.add_inst(IrOp::LoadDouble {
-                                    dest: lhs_reg,
-                                    val: d,
-                                }),
-                                Value::Bool(b) => self.add_inst(IrOp::LoadBool {
-                                    dest: lhs_reg,
-                                    val: b,
-                                }),
-                                Value::Ref(r) => {
-                                    if let Some(rhs_reg) = self.current().resolve_local(&r) {
-                                        self.add_inst(IrOp::LoadReg {
-                                            dest: lhs_reg,
-                                            src: rhs_reg,
-                                        });
-                                        return lhs_reg;
-                                    }
-
-                                    let hash = Value::Hash(Value::String(r.clone()).get_hash());
-                                    let hash_const =
-                                        match self.constant_pool.iter().position(|x| x == &hash) {
-                                            Some(idx) => idx,
-                                            None => {
-                                                self.constant_pool.push(hash);
-                                                self.constant_pool.len() - 1
-                                            }
-                                        };
-
-                                    self.add_inst(IrOp::LoadConst {
+                                val: i,
+                            }),
+                            Value::Double(d) => self.add_inst(IrOp::LoadDouble {
+                                dest: lhs_reg,
+                                val: d,
+                            }),
+                            Value::Bool(b) => self.add_inst(IrOp::LoadBool {
+                                dest: lhs_reg,
+                                val: b,
+                            }),
+                            Value::Ref(r) => {
+                                if let Some(rhs_reg) = self.current().resolve_local(&r) {
+                                    self.add_inst(IrOp::LoadReg {
                                         dest: lhs_reg,
-                                        idx: hash_const,
+                                        src: rhs_reg,
                                     });
+                                    return lhs_reg;
                                 }
-                                Value::Fun { arity: _, body: _ }
-                                | Value::Object(_)
-                                | Value::String(_)
-                                | Value::NativeFun(_)
-                                | Value::Hash(_)
-                                | Value::EnumDefinition(_)
-                                | Value::EnumField { .. }
-                                | Value::Bytes(_) => {
-                                    let idx = match self.constant_pool.iter().position(|x| x == &v)
-                                    {
-                                        Some(expr) => expr,
+
+                                let hash = Value::Hash(Value::String(r.clone()).get_hash());
+                                let hash_const =
+                                    match self.constant_pool.iter().position(|x| x == &hash) {
+                                        Some(idx) => idx,
                                         None => {
-                                            self.constant_pool.push(v);
+                                            self.constant_pool.push(hash);
                                             self.constant_pool.len() - 1
                                         }
                                     };
 
-                                    self.add_inst(IrOp::LoadConst { dest: lhs_reg, idx });
-                                }
+                                self.add_inst(IrOp::LoadConst {
+                                    dest: lhs_reg,
+                                    idx: hash_const,
+                                });
                             }
-                        } else {
-                            let res = self.compile(*value);
+                            Value::Fun { arity: _, body: _ }
+                            | Value::Object(_)
+                            | Value::String(_)
+                            | Value::NativeFun(_)
+                            | Value::Hash(_)
+                            | Value::EnumDefinition(_)
+                            | Value::EnumField { .. }
+                            | Value::Bytes(_) => {
+                                let idx = match self.constant_pool.iter().position(|x| x == &v) {
+                                    Some(expr) => expr,
+                                    None => {
+                                        self.constant_pool.push(v);
+                                        self.constant_pool.len() - 1
+                                    }
+                                };
 
-                            self.add_inst(IrOp::LoadReg {
-                                dest: lhs_reg,
-                                src: res,
-                            });
+                                self.add_inst(IrOp::LoadConst { dest: lhs_reg, idx });
+                            }
                         }
-                        0
+                    } else {
+                        let res = self.compile(*value);
+
+                        self.add_inst(IrOp::LoadReg {
+                            dest: lhs_reg,
+                            src: res,
+                        });
                     }
-                    _ => panic!("WrongType"),
-                },
+                    0
+                }
                 Ast::Dot {
                     accessor,
                     access,
@@ -1418,31 +1420,46 @@ impl Compiler {
                             let enum_idx = match self.enums.iter().position(|e| e.name == *name) {
                                 Some(idx) => idx,
                                 None => {
-                                    self.error(0, 0, format!("referencing enum definition that doesn't exist: '{}'", name));
+                                    self.error(
+                                        0,
+                                        0,
+                                        format!(
+                                            "referencing enum definition that doesn't exist: '{}'",
+                                            name
+                                        ),
+                                    );
                                     continue;
                                 }
                             };
                             let enum_def = self.enums[enum_idx].clone();
-                            let tag_idx = enum_def
-                                .variants
-                                .iter()
-                                .position(|v| v.name == *tag);
+                            let tag_idx = enum_def.variants.iter().position(|v| v.name == *tag);
                             let tag_idx = if let Some(idx) = tag_idx {
                                 idx
                             } else {
-                                self.error(0, 0, format!("referencing enum field that doesn't exist: '{}::{}'", name, tag));
+                                self.error(
+                                    0,
+                                    0,
+                                    format!(
+                                        "referencing enum field that doesn't exist: '{}::{}'",
+                                        name, tag
+                                    ),
+                                );
                                 continue;
                             };
                             let tag_info = &enum_def.variants[tag_idx];
 
                             if fields.len() != tag_info.fields.len() {
-                                self.error(0, 0, format!(
-                                    "pattern for '{}::{}' expected {} fields, got {}",
-                                    name,
-                                    tag,
-                                    tag_info.fields.len(),
-                                    fields.len()
-                                ));
+                                self.error(
+                                    0,
+                                    0,
+                                    format!(
+                                        "pattern for '{}::{}' expected {} fields, got {}",
+                                        name,
+                                        tag,
+                                        tag_info.fields.len(),
+                                        fields.len()
+                                    ),
+                                );
                                 continue;
                             }
 
@@ -1526,14 +1543,14 @@ impl Compiler {
                             });
                         }
                         MatchPattern::Wildcard(binding) => {
-                            if let Some(var_name) = binding {
-                                if var_name != "_" {
-                                    let bound_reg = self.current().add_local(var_name);
-                                    self.add_inst(IrOp::LoadReg {
-                                        dest: bound_reg,
-                                        src: target_reg,
-                                    });
-                                }
+                            if let Some(var_name) = binding
+                                && var_name != "_"
+                            {
+                                let bound_reg = self.current().add_local(var_name);
+                                self.add_inst(IrOp::LoadReg {
+                                    dest: bound_reg,
+                                    src: target_reg,
+                                });
                             }
                         }
                     }
@@ -1600,7 +1617,7 @@ impl Compiler {
                     self.current().add_local(arg);
                 }
 
-                self.compile((*body).into());
+                self.compile(*body);
 
                 let fun = self.contexts.pop().unwrap();
 
@@ -1640,7 +1657,11 @@ impl Compiler {
         let idx = self.enums.iter().position(|e| e.name == name);
 
         if idx.is_none() {
-            self.error(0, 0, format!("referencing enum definition that doesn't exist: '{}'", name));
+            self.error(
+                0,
+                0,
+                format!("referencing enum definition that doesn't exist: '{}'", name),
+            );
             return (0, 0, vec![]);
         }
 
@@ -1649,29 +1670,36 @@ impl Compiler {
         let tag_idx = enum_def.variants.iter().position(|v| v.name == tag);
 
         if tag_idx.is_none() {
-            self.error(0, 0, format!(
-                "referencing enum field that doesn't exist: '{}::{}'",
-                name, tag
-            ));
+            self.error(
+                0,
+                0,
+                format!(
+                    "referencing enum field that doesn't exist: '{}::{}'",
+                    name, tag
+                ),
+            );
             return (enum_def.idx, 0, vec![]);
         }
 
         let tag_info = enum_def.variants[tag_idx.unwrap()].clone();
 
         if tag_info.fields.len() != fields.len() {
-            self.error(0, 0, format!(
-                "expected {} values, got {} in {}::{}",
-                tag_info.fields.len(),
-                fields.len(),
-                name,
-                tag
-            ));
+            self.error(
+                0,
+                0,
+                format!(
+                    "expected {} values, got {} in {}::{}",
+                    tag_info.fields.len(),
+                    fields.len(),
+                    name,
+                    tag
+                ),
+            );
         }
 
         let mut arg_map = vec![];
 
-        for i in 0..fields.len() {
-            let field = &fields[i];
+        for (i, field) in fields.iter().enumerate() {
             let field_def = Rc::new(tag_info.fields[i].clone());
 
             let reg = self.compile(field.clone());

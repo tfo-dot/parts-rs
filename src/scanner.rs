@@ -34,7 +34,11 @@ impl std::fmt::Display for ScannerError {
 impl std::error::Error for ScannerError {}
 
 impl ScannerError {
-    pub fn to_diagnostic(&self, source: Option<&str>, file: Option<&str>) -> crate::diagnostic::Diagnostic {
+    pub fn to_diagnostic(
+        &self,
+        source: Option<&str>,
+        file: Option<&str>,
+    ) -> crate::diagnostic::Diagnostic {
         let msg = self.to_string();
         let mut diag = crate::diagnostic::Diagnostic::error(msg.clone());
         if let Some(src) = source {
@@ -60,14 +64,14 @@ impl Scanner {
     }
 
     fn create_eof(&self) -> Token {
-        return Token {
+        Token {
             kind: TokenType::Special,
             lexeme: "EOF".to_string(),
             span: Span {
                 line: self.line,
                 column: self.column,
             },
-        };
+        }
     }
 
     pub fn get_next(&mut self) -> Result<Token, ScannerError> {
@@ -185,12 +189,8 @@ impl Scanner {
             }
         }
 
-        if rule.process.is_some() {
-            return rule.process.as_ref().unwrap()(
-                &rule.mappings,
-                &source[start..*index],
-                start_span,
-            );
+        if let Some(v) = &rule.process {
+            return v(&rule.mappings, &source[start..*index], start_span);
         }
 
         Ok(vec![Token {

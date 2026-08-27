@@ -126,9 +126,7 @@ impl ParserRule {
 
                         let mut args = Vec::new();
 
-                        if token.kind != TokenType::Operator
-                            && token.lexeme != "RIGHT_PAREN".to_string()
-                        {
+                        if token.kind != TokenType::Operator && token.lexeme != "RIGHT_PAREN" {
                             loop {
                                 let arg = parser.expect_kind(TokenType::Identifier)?;
 
@@ -701,10 +699,10 @@ impl ParserRule {
                         parser.expect_operator("RIGHT_BRACE")?;
                     }
 
-                    return Ok(Ast::EnumDef {
+                    Ok(Ast::EnumDef {
                         name: enum_name.lexeme,
                         variants,
-                    });
+                    })
                 }),
             },
             ParserRule {

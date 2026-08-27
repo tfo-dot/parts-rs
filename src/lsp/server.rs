@@ -48,9 +48,8 @@ impl LspServer {
 
         match req.method.as_str() {
             "initialize" => {
-                let _params: Option<InitializeParams> = req
-                    .params
-                    .and_then(|p| serde_json::from_value(p).ok());
+                let _params: Option<InitializeParams> =
+                    req.params.and_then(|p| serde_json::from_value(p).ok());
 
                 let result = InitializeResult {
                     capabilities: ServerCapabilities {
@@ -83,74 +82,69 @@ impl LspServer {
                 // Client confirmed initialization; nothing to respond
             }
             "textDocument/didOpen" => {
-                if let Some(params_val) = req.params {
-                    if let Ok(params) =
+                if let Some(params_val) = req.params
+                    && let Ok(params) =
                         serde_json::from_value::<DidOpenTextDocumentParams>(params_val)
-                    {
-                        let doc = Document::new(
-                            params.text_document.uri.clone(),
-                            params.text_document.version,
-                            params.text_document.text,
-                        );
-                        let diags = doc.diagnostics();
-                        self.documents.insert(params.text_document.uri.clone(), doc);
+                {
+                    let doc = Document::new(
+                        params.text_document.uri.clone(),
+                        params.text_document.version,
+                        params.text_document.text,
+                    );
+                    let diags = doc.diagnostics();
+                    self.documents.insert(params.text_document.uri.clone(), doc);
 
-                        let notif = JsonRpcNotification::new(
-                            "textDocument/publishDiagnostics",
-                            serde_json::to_value(PublishDiagnosticsParams {
-                                uri: params.text_document.uri,
-                                version: Some(params.text_document.version),
-                                diagnostics: diags,
-                            })
-                            .unwrap(),
-                        );
-                        outputs.push(serde_json::to_string(&notif).unwrap());
-                    }
+                    let notif = JsonRpcNotification::new(
+                        "textDocument/publishDiagnostics",
+                        serde_json::to_value(PublishDiagnosticsParams {
+                            uri: params.text_document.uri,
+                            version: Some(params.text_document.version),
+                            diagnostics: diags,
+                        })
+                        .unwrap(),
+                    );
+                    outputs.push(serde_json::to_string(&notif).unwrap());
                 }
             }
             "textDocument/didChange" => {
-                if let Some(params_val) = req.params {
-                    if let Ok(params) =
+                if let Some(params_val) = req.params
+                    && let Ok(params) =
                         serde_json::from_value::<DidChangeTextDocumentParams>(params_val)
-                    {
-                        if let Some(change) = params.content_changes.into_iter().last() {
-                            if let Some(doc) = self.documents.get_mut(&params.text_document.uri) {
-                                doc.update(params.text_document.version, change.text);
-                                let diags = doc.diagnostics();
+                    && let Some(change) = params.content_changes.into_iter().last()
+                    && let Some(doc) = self.documents.get_mut(&params.text_document.uri)
+                {
+                    doc.update(params.text_document.version, change.text);
+                    let diags = doc.diagnostics();
 
-                                let notif = JsonRpcNotification::new(
-                                    "textDocument/publishDiagnostics",
-                                    serde_json::to_value(PublishDiagnosticsParams {
-                                        uri: params.text_document.uri,
-                                        version: Some(params.text_document.version),
-                                        diagnostics: diags,
-                                    })
-                                    .unwrap(),
-                                );
-                                outputs.push(serde_json::to_string(&notif).unwrap());
-                            }
-                        }
-                    }
+                    let notif = JsonRpcNotification::new(
+                        "textDocument/publishDiagnostics",
+                        serde_json::to_value(PublishDiagnosticsParams {
+                            uri: params.text_document.uri,
+                            version: Some(params.text_document.version),
+                            diagnostics: diags,
+                        })
+                        .unwrap(),
+                    );
+                    outputs.push(serde_json::to_string(&notif).unwrap());
                 }
             }
             "textDocument/didClose" => {
-                if let Some(params_val) = req.params {
-                    if let Ok(params) =
+                if let Some(params_val) = req.params
+                    && let Ok(params) =
                         serde_json::from_value::<DidCloseTextDocumentParams>(params_val)
-                    {
-                        self.documents.remove(&params.text_document.uri);
-                        // Clear diagnostics on close
-                        let notif = JsonRpcNotification::new(
-                            "textDocument/publishDiagnostics",
-                            serde_json::to_value(PublishDiagnosticsParams {
-                                uri: params.text_document.uri,
-                                version: None,
-                                diagnostics: vec![],
-                            })
-                            .unwrap(),
-                        );
-                        outputs.push(serde_json::to_string(&notif).unwrap());
-                    }
+                {
+                    self.documents.remove(&params.text_document.uri);
+                    // Clear diagnostics on close
+                    let notif = JsonRpcNotification::new(
+                        "textDocument/publishDiagnostics",
+                        serde_json::to_value(PublishDiagnosticsParams {
+                            uri: params.text_document.uri,
+                            version: None,
+                            diagnostics: vec![],
+                        })
+                        .unwrap(),
+                    );
+                    outputs.push(serde_json::to_string(&notif).unwrap());
                 }
             }
             "textDocument/hover" => {
@@ -226,7 +220,8 @@ impl LspServer {
                     let edits = req
                         .params
                         .and_then(|p| {
-                            let params: DocumentFormattingParams = serde_json::from_value(p).ok()?;
+                            let params: DocumentFormattingParams =
+                                serde_json::from_value(p).ok()?;
                             let doc = self.documents.get(&params.text_document.uri)?;
                             Some(doc.format())
                         })
@@ -288,10 +283,10 @@ impl LspServer {
                     break; // Header section ended
                 }
 
-                if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
-                    if let Ok(len) = len_str.trim().parse::<usize>() {
-                        content_length = Some(len);
-                    }
+                if let Some(len_str) = trimmed.strip_prefix("Content-Length:")
+                    && let Ok(len) = len_str.trim().parse::<usize>()
+                {
+                    content_length = Some(len);
                 }
             }
 

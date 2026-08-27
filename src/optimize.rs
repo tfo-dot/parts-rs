@@ -8,6 +8,12 @@ pub struct AstOptimizer {
     inline_candidates: HashMap<String, (Vec<String>, Ast)>,
 }
 
+impl Default for AstOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AstOptimizer {
     pub fn new() -> Self {
         Self {
@@ -159,16 +165,14 @@ impl AstOptimizer {
                     right,
                     operator,
                 } = node
+                    && *operator == BinaryOperator::Modulo
+                    && let Ast::Value(Value::Int(i)) = **right
+                    && i != 0
+                    && (i & (i - 1)) == 0
                 {
-                    if *operator == BinaryOperator::Modulo {
-                        if let Ast::Value(Value::Int(i)) = **right {
-                            if i != 0 && (i & (i - 1)) == 0 {
-                                *operator = BinaryOperator::BitAnd;
+                    *operator = BinaryOperator::BitAnd;
 
-                                **right = Ast::Value(Value::Int(i - 1));
-                            }
-                        }
-                    }
+                    **right = Ast::Value(Value::Int(i - 1));
                 }
             }
             Ast::If {
@@ -227,32 +231,30 @@ impl AstOptimizer {
             _ => {}
         }
 
-        if let Ast::Call { what, args } = node {
-            if let Ast::Value(Value::Ref(func_name)) = &**what {
-                if let Some((params, body_expr)) = self.inline_candidates.get(func_name) {
-                    if params.len() == args.len() {
-                        let mut arg_map = HashMap::new();
-                        for (param, arg) in params.iter().zip(args.iter()) {
-                            arg_map.insert(param.clone(), arg.clone());
-                        }
-
-                        let mut inlined_body = body_expr.clone();
-
-                        self.substitute(&mut inlined_body, &arg_map);
-
-                        *node = inlined_body;
-                    }
-                }
+        if let Ast::Call { what, args } = node
+            && let Ast::Value(Value::Ref(func_name)) = &**what
+            && let Some((params, body_expr)) = self.inline_candidates.get(func_name)
+            && params.len() == args.len()
+        {
+            let mut arg_map = HashMap::new();
+            for (param, arg) in params.iter().zip(args.iter()) {
+                arg_map.insert(param.clone(), arg.clone());
             }
+
+            let mut inlined_body = body_expr.clone();
+
+            self.substitute(&mut inlined_body, &arg_map);
+
+            *node = inlined_body;
         }
     }
 
     fn substitute(&self, node: &mut Ast, arg_map: &HashMap<String, Ast>) {
-        if let Ast::Value(Value::Ref(var_name)) = node {
-            if let Some(replacement) = arg_map.get(var_name) {
-                *node = replacement.clone();
-                return;
-            }
+        if let Ast::Value(Value::Ref(var_name)) = node
+            && let Some(replacement) = arg_map.get(var_name)
+        {
+            *node = replacement.clone();
+            return;
         }
 
         match node {
@@ -393,11 +395,11 @@ impl IrOptimizer {
                         | IrOp::LoadNative { dest, .. }
                         | IrOp::LoadFun { dest, .. }
                         | IrOp::LoadEnumField { dest, .. }
-                        | IrOp::MatchEnum { dest, .. } => {
-                            if *dest == *load_src {
-                                *dest = *final_dest;
-                                merged = true;
-                            }
+                        | IrOp::MatchEnum { dest, .. }
+                            if *dest == *load_src =>
+                        {
+                            *dest = *final_dest;
+                            merged = true;
                         }
                         _ => {}
                     }
@@ -411,19 +413,18 @@ impl IrOptimizer {
 
                 if let (IrOp::LoadInt { dest: d1, .. }, IrOp::LoadInt { dest: d2, .. }) =
                     (&op1, op2)
+                    && d1 == d2
                 {
-                    if d1 == d2 {
-                        i += 1;
-                        continue;
-                    }
+                    i += 1;
+                    continue;
                 }
 
-                if let (IrOp::Jump { target: t1 }, IrOp::Label(t2)) = (&op1, op2) {
-                    if t1 == t2 {
-                        optimized.push(op2.clone());
-                        i += 2;
-                        continue;
-                    }
+                if let (IrOp::Jump { target: t1 }, IrOp::Label(t2)) = (&op1, op2)
+                    && t1 == t2
+                {
+                    optimized.push(op2.clone());
+                    i += 2;
+                    continue;
                 }
             }
 
@@ -450,74 +451,68 @@ impl IrOptimizer {
                 known_ints.clear();
             }
 
-            if let IrOp::LoadInt { dest, val } = op {
-                if known_ints.get(dest) == Some(val) {
-                    keep = false;
-                }
+            if let IrOp::LoadInt { dest, val } = op
+                && known_ints.get(dest) == Some(val)
+            {
+                keep = false;
             }
 
-            if keep {
-                if let IrOp::LoadInt { dest, .. } = op {
-                    let mut is_dead = false;
+            if keep && let IrOp::LoadInt { dest, .. } = op {
+                let mut is_dead = false;
 
-                    let limit = std::cmp::min(i + 15, ir.len());
-                    for future_i in (i + 1)..limit {
-                        let future_op = &ir[future_i];
-
-                        if matches!(
-                            future_op,
-                            IrOp::Label(_) | IrOp::Jump { .. } | IrOp::JumpNot { .. }
-                        ) {
-                            break;
-                        }
-
-                        let reads_dest = match future_op {
-                            IrOp::Binary { left, right, .. } => *left == *dest || *right == *dest,
-                            IrOp::GetProperty { obj, .. } => *obj == *dest,
-                            IrOp::GetPropertyDyn { obj, key, .. } => *obj == *dest || *key == *dest,
-                            IrOp::SetPropertyDyn { obj, key, val } => {
-                                *obj == *dest || *key == *dest || *val == *dest
-                            }
-                            IrOp::LoadReg { src, .. } => *src == *dest,
-                            IrOp::SetProperty { obj, val, .. } => *obj == *dest || *val == *dest,
-                            IrOp::Call { what, args, .. } => *what == *dest || args.contains(dest),
-                            IrOp::LoadEnumField { args, .. } => {
-                                args.iter().any(|(_, reg)| reg == dest)
-                            }
-                            IrOp::MatchEnum { src, .. } => *src == *dest,
-                            _ => false,
-                        };
-
-                        if reads_dest {
-                            break;
-                        }
-
-                        let writes_dest = match future_op {
-                            IrOp::LoadInt { dest: d, .. }
-                            | IrOp::LoadBool { dest: d, .. }
-                            | IrOp::LoadConst { dest: d, .. }
-                            | IrOp::LoadObject { dest: d, .. }
-                            | IrOp::LoadNative { dest: d, .. }
-                            | IrOp::LoadFun { dest: d, .. }
-                            | IrOp::LoadReg { dest: d, .. }
-                            | IrOp::Binary { dest: d, .. }
-                            | IrOp::GetProperty { dest: d, .. }
-                            | IrOp::GetPropertyDyn { dest: d, .. }
-                            | IrOp::Call { dest: d, .. }
-                            | IrOp::LoadEnumField { dest: d, .. }
-                            | IrOp::MatchEnum { dest: d, .. } => *d == *dest,
-                            _ => false,
-                        };
-
-                        if writes_dest {
-                            is_dead = true;
-                            break;
-                        }
+                let limit = std::cmp::min(i + 15, ir.len());
+                for future_op in ir.iter().take(limit).skip(i + 1) {
+                    if matches!(
+                        future_op,
+                        IrOp::Label(_) | IrOp::Jump { .. } | IrOp::JumpNot { .. }
+                    ) {
+                        break;
                     }
 
-                    if is_dead {
-                        keep = false;
+                    let reads_dest = match future_op {
+                        IrOp::Binary { left, right, .. } => *left == *dest || *right == *dest,
+                        IrOp::GetProperty { obj, .. } => *obj == *dest,
+                        IrOp::GetPropertyDyn { obj, key, .. } => *obj == *dest || *key == *dest,
+                        IrOp::SetPropertyDyn { obj, key, val } => {
+                            *obj == *dest || *key == *dest || *val == *dest
+                        }
+                        IrOp::LoadReg { src, .. } => *src == *dest,
+                        IrOp::SetProperty { obj, val, .. } => *obj == *dest || *val == *dest,
+                        IrOp::Call { what, args, .. } => *what == *dest || args.contains(dest),
+                        IrOp::LoadEnumField { args, .. } => args.iter().any(|(_, reg)| reg == dest),
+                        IrOp::MatchEnum { src, .. } => *src == *dest,
+                        _ => false,
+                    };
+
+                    if reads_dest {
+                        break;
                     }
+
+                    let writes_dest = match future_op {
+                        IrOp::LoadInt { dest: d, .. }
+                        | IrOp::LoadBool { dest: d, .. }
+                        | IrOp::LoadConst { dest: d, .. }
+                        | IrOp::LoadObject { dest: d, .. }
+                        | IrOp::LoadNative { dest: d, .. }
+                        | IrOp::LoadFun { dest: d, .. }
+                        | IrOp::LoadReg { dest: d, .. }
+                        | IrOp::Binary { dest: d, .. }
+                        | IrOp::GetProperty { dest: d, .. }
+                        | IrOp::GetPropertyDyn { dest: d, .. }
+                        | IrOp::Call { dest: d, .. }
+                        | IrOp::LoadEnumField { dest: d, .. }
+                        | IrOp::MatchEnum { dest: d, .. } => *d == *dest,
+                        _ => false,
+                    };
+
+                    if writes_dest {
+                        is_dead = true;
+                        break;
+                    }
+                }
+
+                if is_dead {
+                    keep = false;
                 }
             }
 
@@ -569,42 +564,40 @@ impl IrOptimizer {
                     dest: temp_reg,
                     val,
                 } = op1
-                {
-                    if let IrOp::Binary {
+                    && let IrOp::Binary {
                         dest: target_reg,
                         op,
                         left,
                         right,
                     } = op2
-                    {
-                        let is_target_left = target_reg == left && temp_reg == right;
-                        let is_target_right = target_reg == right && temp_reg == left;
+                {
+                    let is_target_left = target_reg == left && temp_reg == right;
+                    let is_target_right = target_reg == right && temp_reg == left;
 
-                        let is_add = matches!(op, BinaryOperator::Add);
-                        let is_sub = matches!(op, BinaryOperator::Minus);
+                    let is_add = matches!(op, BinaryOperator::Add);
+                    let is_sub = matches!(op, BinaryOperator::Minus);
 
-                        let valid_add = is_add && (is_target_left || is_target_right);
-                        let valid_sub = is_sub && is_target_left;
+                    let valid_add = is_add && (is_target_left || is_target_right);
+                    let valid_sub = is_sub && is_target_left;
 
-                        if valid_add || valid_sub {
-                            let mut replaced = false;
+                    if valid_add || valid_sub {
+                        let mut replaced = false;
 
-                            if (valid_add && *val == 1) || (valid_sub && *val == -1) {
-                                optimized.push(IrOp::Inc {
-                                    target: *target_reg,
-                                });
-                                replaced = true;
-                            } else if (valid_sub && *val == 1) || (valid_add && *val == -1) {
-                                optimized.push(IrOp::Dec {
-                                    target: *target_reg,
-                                });
-                                replaced = true;
-                            }
+                        if (valid_add && *val == 1) || (valid_sub && *val == -1) {
+                            optimized.push(IrOp::Inc {
+                                target: *target_reg,
+                            });
+                            replaced = true;
+                        } else if (valid_sub && *val == 1) || (valid_add && *val == -1) {
+                            optimized.push(IrOp::Dec {
+                                target: *target_reg,
+                            });
+                            replaced = true;
+                        }
 
-                            if replaced {
-                                i += 2;
-                                continue;
-                            }
+                        if replaced {
+                            i += 2;
+                            continue;
                         }
                     }
                 }

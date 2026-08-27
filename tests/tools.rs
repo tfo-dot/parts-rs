@@ -1,7 +1,4 @@
-use parts::{
-    emitter::Emitter,
-    tools::LanguageTools,
-};
+use parts::{emitter::Emitter, tools::LanguageTools};
 
 #[test]
 fn test_tools_tokenize() {

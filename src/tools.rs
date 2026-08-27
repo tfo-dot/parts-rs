@@ -16,7 +16,6 @@ pub struct LanguageTools;
 
 #[allow(clippy::result_large_err)]
 impl LanguageTools {
-
     /// Tokenize source code and return all tokens or a Diagnostic error.
     pub fn tokenize(source: &str, file: Option<&str>) -> Result<Vec<Token>, Diagnostic> {
         let mut scanner = Scanner::new(ScannerRule::get_default_rules(), source.to_string());
@@ -25,7 +24,8 @@ impl LanguageTools {
         loop {
             match scanner.get_next() {
                 Ok(token) => {
-                    let is_eof = token.kind == crate::scanner::TokenType::Special && token.lexeme == "EOF";
+                    let is_eof =
+                        token.kind == crate::scanner::TokenType::Special && token.lexeme == "EOF";
                     tokens.push(token);
                     if is_eof {
                         break;
@@ -43,7 +43,9 @@ impl LanguageTools {
     /// Parse source code into an AST or return a Diagnostic error.
     pub fn parse(source: &str, file: Option<&str>) -> Result<Vec<Ast>, Diagnostic> {
         let mut parser = Parser::new(source.to_string());
-        parser.parse_all().map_err(|err| err.to_diagnostic(Some(source), file))
+        parser
+            .parse_all()
+            .map_err(|err| err.to_diagnostic(Some(source), file))
     }
 
     /// Check source code for syntax and compilation errors without executing.
@@ -53,7 +55,11 @@ impl LanguageTools {
     }
 
     /// Check source code with a specific import resolution path.
-    pub fn check_with_import_path(source: &str, file: Option<&str>, import_path: PathBuf) -> Report {
+    pub fn check_with_import_path(
+        source: &str,
+        file: Option<&str>,
+        import_path: PathBuf,
+    ) -> Report {
         let mut report = Report::new();
 
         let mut parser = Parser::new(source.to_string());
@@ -105,7 +111,11 @@ impl LanguageTools {
             Ast::Value(val) => {
                 out.push_str(&format!("{}{:?}", pad, val));
             }
-            Ast::Binary { left, right, operator } => {
+            Ast::Binary {
+                left,
+                right,
+                operator,
+            } => {
                 out.push_str(&format!("{}({:?}\n", pad, operator));
                 Self::format_ast_node(left, indent + 1, out);
                 out.push('\n');
@@ -124,7 +134,11 @@ impl LanguageTools {
                 out.push_str(&format!("{}return ", pad));
                 Self::format_ast_node(value, indent + 1, out);
             }
-            Ast::If { condition, then_branch, else_branch } => {
+            Ast::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 out.push_str(&format!("{}if ", pad));
                 Self::format_ast_node(condition, indent + 1, out);
                 out.push_str(" then\n");
@@ -166,12 +180,19 @@ impl LanguageTools {
         out
     }
 
-    fn disassemble_instruction(code: &[u8], offset: usize, _constants: &[Value]) -> (usize, String) {
+    fn disassemble_instruction(
+        code: &[u8],
+        offset: usize,
+        _constants: &[Value],
+    ) -> (usize, String) {
         let byte = code[offset];
         let opcode = match OpCode::try_from(byte) {
             Ok(op) => op,
             Err(_) => {
-                return (offset + 1, format!("{:04} Unknown OpCode: {:#04X}", offset, byte));
+                return (
+                    offset + 1,
+                    format!("{:04} Unknown OpCode: {:#04X}", offset, byte),
+                );
             }
         };
 
@@ -198,7 +219,10 @@ impl LanguageTools {
                     let dest = code[offset + 2];
                     let left = code[offset + 3];
                     let right = code[offset + 4];
-                    format!("{:04} BINARY op:{} r{} = r{} op r{}", offset, op_code, dest, left, right)
+                    format!(
+                        "{:04} BINARY op:{} r{} = r{} op r{}",
+                        offset, op_code, dest, left, right
+                    )
                 } else {
                     format!("{:04} BINARY (truncated)", offset)
                 }

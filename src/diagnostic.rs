@@ -122,12 +122,20 @@ impl Diagnostic {
     }
 
     /// Render this diagnostic as a plain string without ANSI color codes.
-    pub fn render_plain(&self, fallback_source: Option<&str>, fallback_file: Option<&str>) -> String {
+    pub fn render_plain(
+        &self,
+        fallback_source: Option<&str>,
+        fallback_file: Option<&str>,
+    ) -> String {
         self.render_internal(fallback_source, fallback_file, false)
     }
 
     /// Render this diagnostic with ANSI color codes.
-    pub fn render_colored(&self, fallback_source: Option<&str>, fallback_file: Option<&str>) -> String {
+    pub fn render_colored(
+        &self,
+        fallback_source: Option<&str>,
+        fallback_file: Option<&str>,
+    ) -> String {
         self.render_internal(fallback_source, fallback_file, true)
     }
 
@@ -147,7 +155,11 @@ impl Diagnostic {
 
         let bold = if use_color { "\x1b[1m" } else { "" };
         let reset = if use_color { "\x1b[0m" } else { "" };
-        let color = if use_color { self.level.ansi_color() } else { "" };
+        let color = if use_color {
+            self.level.ansi_color()
+        } else {
+            ""
+        };
         let blue = if use_color { "\x1b[1;34m" } else { "" };
 
         // 1. Header: error: message
@@ -181,76 +193,76 @@ impl Diagnostic {
             }
         } else if let Some(file) = file_name {
             out.push_str(&format!("  {}-->{} {}\n", blue, reset, file));
-        } else if let (Some(line), Some(col)) = (self.line, self.column) {
-            if line > 0 {
-                out.push_str(&format!(
-                    "  {}-->{} line {}, col {}\n",
-                    blue,
-                    reset,
-                    line,
-                    if col == 0 { 1 } else { col }
-                ));
-            }
+        } else if let (Some(line), Some(col)) = (self.line, self.column)
+            && line > 0
+        {
+            out.push_str(&format!(
+                "  {}-->{} line {}, col {}\n",
+                blue,
+                reset,
+                line,
+                if col == 0 { 1 } else { col }
+            ));
         }
 
         // 3. Source code snippet with caret
-        if let (Some(src), Some(target_line)) = (source, self.line) {
-            if target_line > 0 {
-                let lines: Vec<&str> = src.lines().collect();
-                if target_line <= lines.len() {
-                    let line_str = lines[target_line - 1];
-                    let line_num_str = format!("{}", target_line);
-                    let gutter_width = line_num_str.len().max(2);
+        if let (Some(src), Some(target_line)) = (source, self.line)
+            && target_line > 0
+        {
+            let lines: Vec<&str> = src.lines().collect();
+            if target_line <= lines.len() {
+                let line_str = lines[target_line - 1];
+                let line_num_str = format!("{}", target_line);
+                let gutter_width = line_num_str.len().max(2);
 
-                    // Empty gutter line: "   |"
-                    out.push_str(&format!(
-                        "{:width$} {}|{}\n",
-                        "",
-                        blue,
-                        reset,
-                        width = gutter_width
-                    ));
+                // Empty gutter line: "   |"
+                out.push_str(&format!(
+                    "{:width$} {}|{}\n",
+                    "",
+                    blue,
+                    reset,
+                    width = gutter_width
+                ));
 
-                    // Source line: " 2 | let x = 5"
-                    out.push_str(&format!(
-                        "{}{:>width$}{} {}|{} {}\n",
-                        bold,
-                        line_num_str,
-                        reset,
-                        blue,
-                        reset,
-                        line_str,
-                        width = gutter_width
-                    ));
+                // Source line: " 2 | let x = 5"
+                out.push_str(&format!(
+                    "{}{:>width$}{} {}|{} {}\n",
+                    bold,
+                    line_num_str,
+                    reset,
+                    blue,
+                    reset,
+                    line_str,
+                    width = gutter_width
+                ));
 
-                    // Caret line: "   |     ^^^^ unexpected token"
-                    let col = self.column.unwrap_or(1);
-                    let start_col = if col == 0 { 1 } else { col };
-                    let indent = if start_col > 1 { start_col - 1 } else { 0 };
-                    let carets_count = self.length.max(1);
-                    let carets = "^".repeat(carets_count);
+                // Caret line: "   |     ^^^^ unexpected token"
+                let col = self.column.unwrap_or(1);
+                let start_col = if col == 0 { 1 } else { col };
+                let indent = start_col.saturating_sub(1);
+                let carets_count = self.length.max(1);
+                let carets = "^".repeat(carets_count);
 
-                    let label_str = if let Some(l) = &self.label {
-                        format!(" {}", l)
-                    } else {
-                        String::new()
-                    };
+                let label_str = if let Some(l) = &self.label {
+                    format!(" {}", l)
+                } else {
+                    String::new()
+                };
 
-                    out.push_str(&format!(
-                        "{:width$} {}|{} {:indent$}{}{}{}{}{}\n",
-                        "",
-                        blue,
-                        reset,
-                        "",
-                        bold,
-                        color,
-                        carets,
-                        label_str,
-                        reset,
-                        width = gutter_width,
-                        indent = indent
-                    ));
-                }
+                out.push_str(&format!(
+                    "{:width$} {}|{} {:indent$}{}{}{}{}{}\n",
+                    "",
+                    blue,
+                    reset,
+                    "",
+                    bold,
+                    color,
+                    carets,
+                    label_str,
+                    reset,
+                    width = gutter_width,
+                    indent = indent
+                ));
             }
         }
 

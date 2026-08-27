@@ -129,7 +129,7 @@ pub fn __get_next(obj: Value) -> Result<Value, String> {
                     return Ok(Value::Bool(false));
                 }
 
-                if let Some(val) = items.get(&entry_hash.unwrap()) {
+                if let Some(val) = items.get(entry_hash.unwrap()) {
                     map.insert(index_hash, Value::Int(index + 1));
 
                     return Ok(val.clone());
@@ -170,7 +170,7 @@ pub fn __has_next(obj: Value) -> Result<Value, String> {
                     return Ok(Value::Bool(false));
                 }
 
-                return Ok(Value::Bool(items.get(&entry_hash.unwrap()).is_some()));
+                return Ok(Value::Bool(items.get(entry_hash.unwrap()).is_some()));
             }
             _ => (),
         }
@@ -181,18 +181,94 @@ pub fn __has_next(obj: Value) -> Result<Value, String> {
     }
 }
 
+#[cfg(unix)]
+fn get_os_random_bytes(buffer: &mut [u8]) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut file = File::open("/dev/urandom")?;
+    file.read_exact(buffer)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn get_os_random_bytes(buffer: &mut [u8]) -> std::io::Result<()> {
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            h_algorithm: *mut core::ffi::c_void,
+            pb_buffer: *mut u8,
+            cb_buffer: u32,
+            dw_flags: u32,
+        ) -> i32;
+    }
+
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x00000002;
+
+    let status = unsafe {
+        BCryptGenRandom(
+            core::ptr::null_mut(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "BCryptGenRandom failed",
+        ))
+    }
+}
+
+static RAND_STATE: Mutex<[u64; 2]> = Mutex::new([0, 0]);
+
 #[native_function]
 pub fn __rand() -> Result<Value, String> {
-    let a = 1103515245;
-    let c = 12345;
-    let m = 2147483648;
+    let mut state = RAND_STATE.lock().unwrap();
 
-    let seed_source = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros();
+    if state[0] == 0 && state[1] == 0 {
+        let mut buffer = [0u8; 8];
 
-    Ok(Value::Int(((a * seed_source) + c % m) as i64))
+        let seed = match get_os_random_bytes(&mut buffer) {
+            Ok(_) => u64::from_ne_bytes(buffer),
+            Err(e) => return Err(format!("Failed to fetch OS entropy: {}", e)),
+        };
+
+        let negated = seed.wrapping_neg();
+
+        fn fmix64(mut k: u64) -> u64 {
+            k ^= k >> 33;
+            k = k.wrapping_mul(0xff51afd7ed558ccd);
+
+            k ^= k >> 33;
+            k = k.wrapping_mul(0xc4ceb9fe1a85ec53);
+
+            k ^= k >> 33;
+
+            k
+        }
+
+        state[0] = fmix64(seed);
+        state[0] = fmix64(negated);
+    }
+
+    let mut s1 = state[0];
+    let s0 = state[1];
+
+    state[0] = s0;
+
+    s1 ^= s1 << 23;
+    state[1] = s1 ^ s0 ^ (s1 >> 18) ^ (s0 >> 5);
+
+    let mantissa = state[0].wrapping_add(state[1]) >> 11;
+
+    let result = (mantissa as f64) * (1.0 / (1u64 << 53) as f64);
+
+    Ok(Value::Double(result))
 }
 
 #[native_function(arity = 1)]
@@ -462,7 +538,7 @@ pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     }
 
     if let Some(ch) = s.chars().nth(index as usize) {
-        Ok(Value::ok(Value::Int((ch as i64).try_into().unwrap())))
+        Ok(Value::ok(Value::Int(ch as i64)))
     } else {
         Ok(Value::err("Index out of bounds in byte_at"))
     }
@@ -1642,7 +1718,7 @@ fn compute_sha1(data: &[u8]) -> [u8; 20] {
         let mut d = h3;
         let mut e = h4;
 
-        for i in 0..80 {
+        for (i, item) in w.iter().enumerate() {
             let (f, k) = match i {
                 0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
                 20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
@@ -1655,7 +1731,7 @@ fn compute_sha1(data: &[u8]) -> [u8; 20] {
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
-                .wrapping_add(w[i]);
+                .wrapping_add(*item);
             e = d;
             d = c;
             c = b.rotate_left(30);
@@ -1682,7 +1758,7 @@ fn compute_sha1(data: &[u8]) -> [u8; 20] {
 const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn encode_base64(data: &[u8]) -> String {
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity((data.len() + 2).div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0];
         let b1 = chunk.get(1).copied().unwrap_or(0);
@@ -1711,7 +1787,7 @@ fn encode_base64(data: &[u8]) -> String {
 
 fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
     let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if clean.len() % 4 != 0 {
+    if !clean.len().is_multiple_of(4) {
         return Err("Invalid Base64 length".to_string());
     }
     let mut out = Vec::with_capacity(clean.len() / 4 * 3);
@@ -2201,10 +2277,10 @@ impl StdModule {
             tls_connect(),
             net_read(),
         ];
-        if let Some(extra) = EXTRA_NATIVES.get() {
-            if let Ok(guard) = extra.lock() {
-                functions.extend((*guard).clone());
-            }
+        if let Some(extra) = EXTRA_NATIVES.get()
+            && let Ok(guard) = extra.lock()
+        {
+            functions.extend((*guard).clone());
         }
 
         Self { functions }
