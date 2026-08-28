@@ -46,7 +46,7 @@ mod tests {
 
         assert_eq!(parsed.id, "movie_456");
         assert_eq!(parsed.duration, 5000);
-        assert_eq!(parsed.is_playable, false);
+        assert!(!parsed.is_playable);
         assert_eq!(parsed.season_index, None)
     }
 

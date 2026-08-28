@@ -176,7 +176,9 @@ impl AstOptimizer {
                             *node = *left.clone();
                             return true;
                         }
-                        BinaryOperator::Multiply | BinaryOperator::BitAnd => {
+                        BinaryOperator::Multiply | BinaryOperator::BitAnd
+                            if !Self::has_side_effects(left) =>
+                        {
                             *node = Ast::Value(Value::Int(0));
                             return true;
                         }
@@ -191,7 +193,9 @@ impl AstOptimizer {
                             *node = *right.clone();
                             return true;
                         }
-                        BinaryOperator::Multiply | BinaryOperator::BitAnd => {
+                        BinaryOperator::Multiply | BinaryOperator::BitAnd
+                            if !Self::has_side_effects(right) =>
+                        {
                             *node = Ast::Value(Value::Int(0));
                             return true;
                         }
@@ -212,21 +216,6 @@ impl AstOptimizer {
                 {
                     *node = *right.clone();
                     return true;
-                }
-
-                if let Ast::Binary {
-                    left: _,
-                    right,
-                    operator,
-                } = node
-                    && *operator == BinaryOperator::Modulo
-                    && let Ast::Value(Value::Int(i)) = **right
-                    && i > 0
-                    && (i & (i - 1)) == 0
-                {
-                    *operator = BinaryOperator::BitAnd;
-                    **right = Ast::Value(Value::Int(i - 1));
-                    changed = true;
                 }
 
                 if let Ast::Binary {
@@ -465,6 +454,53 @@ impl AstOptimizer {
 
         None
     }
+
+    pub fn has_side_effects(ast: &Ast) -> bool {
+        match ast {
+            Ast::Call { .. } | Ast::Raise { .. } | Ast::Return { .. } | Ast::Set { .. } => true,
+            Ast::Declare { value, .. } => Self::has_side_effects(value),
+            Ast::Binary { left, right, .. } => {
+                Self::has_side_effects(left) || Self::has_side_effects(right)
+            }
+            Ast::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                Self::has_side_effects(condition)
+                    || Self::has_side_effects(then_branch)
+                    || else_branch
+                        .as_ref()
+                        .is_some_and(|e| Self::has_side_effects(e))
+            }
+            Ast::For { condition, body } => {
+                Self::has_side_effects(condition) || Self::has_side_effects(body)
+            }
+            Ast::ForEach { iterable, body, .. } => {
+                Self::has_side_effects(iterable) || Self::has_side_effects(body)
+            }
+            Ast::Block { code } => code.iter().any(Self::has_side_effects),
+            Ast::Dot { accessor, access, .. } => {
+                Self::has_side_effects(accessor) || Self::has_side_effects(access)
+            }
+            Ast::Object(pairs) => pairs
+                .iter()
+                .any(|(k, v)| Self::has_side_effects(k) || Self::has_side_effects(v)),
+            Ast::Match { target, arms } => {
+                Self::has_side_effects(target)
+                    || arms.iter().any(|arm| Self::has_side_effects(&arm.body))
+            }
+            Ast::Value(Value::EnumField { fields, .. }) => {
+                fields.iter().any(Self::has_side_effects)
+            }
+            Ast::Value(_) => false,
+            Ast::ContinueCode
+            | Ast::BreakCode
+            | Ast::Ignore
+            | Ast::EnumDef { .. }
+            | Ast::Import { .. } => false,
+        }
+    }
 }
 
 pub struct IrOptimizer;
@@ -507,24 +543,26 @@ impl IrOptimizer {
                 {
                     let mut merged = false;
 
-                    match &mut op1 {
-                        IrOp::Binary { dest, .. }
-                        | IrOp::Call { dest, .. }
-                        | IrOp::GetProperty { dest, .. }
-                        | IrOp::GetPropertyDyn { dest, .. }
-                        | IrOp::LoadInt { dest, .. }
-                        | IrOp::LoadConst { dest, .. }
-                        | IrOp::LoadObject { dest, .. }
-                        | IrOp::LoadNative { dest, .. }
-                        | IrOp::LoadFun { dest, .. }
-                        | IrOp::LoadEnumField { dest, .. }
-                        | IrOp::MatchEnum { dest, .. }
-                            if *dest == *load_src =>
-                        {
-                            *dest = *final_dest;
-                            merged = true;
+                    if !Self::is_reg_read_after(&ir[i + 2..], *load_src) {
+                        match &mut op1 {
+                            IrOp::Binary { dest, .. }
+                            | IrOp::Call { dest, .. }
+                            | IrOp::GetProperty { dest, .. }
+                            | IrOp::GetPropertyDyn { dest, .. }
+                            | IrOp::LoadInt { dest, .. }
+                            | IrOp::LoadConst { dest, .. }
+                            | IrOp::LoadObject { dest, .. }
+                            | IrOp::LoadNative { dest, .. }
+                            | IrOp::LoadFun { dest, .. }
+                            | IrOp::LoadEnumField { dest, .. }
+                            | IrOp::MatchEnum { dest, .. }
+                                if *dest == *load_src =>
+                            {
+                                *dest = *final_dest;
+                                merged = true;
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
 
                     if merged {
@@ -569,7 +607,11 @@ impl IrOptimizer {
 
             if matches!(
                 op,
-                IrOp::Label(_) | IrOp::Jump { .. } | IrOp::JumpNot { .. }
+                IrOp::Label(_)
+                    | IrOp::Jump { .. }
+                    | IrOp::JumpNot { .. }
+                    | IrOp::Return { .. }
+                    | IrOp::TailCall { .. }
             ) {
                 known_ints.clear();
             }
@@ -587,48 +629,22 @@ impl IrOptimizer {
                 for future_op in ir.iter().take(limit).skip(i + 1) {
                     if matches!(
                         future_op,
-                        IrOp::Label(_) | IrOp::Jump { .. } | IrOp::JumpNot { .. }
+                        IrOp::Label(_)
+                            | IrOp::Jump { .. }
+                            | IrOp::JumpNot { .. }
+                            | IrOp::Return { .. }
+                            | IrOp::TailCall { .. }
                     ) {
                         break;
                     }
 
-                    let reads_dest = match future_op {
-                        IrOp::Binary { left, right, .. } => *left == *dest || *right == *dest,
-                        IrOp::GetProperty { obj, .. } => *obj == *dest,
-                        IrOp::GetPropertyDyn { obj, key, .. } => *obj == *dest || *key == *dest,
-                        IrOp::SetPropertyDyn { obj, key, val } => {
-                            *obj == *dest || *key == *dest || *val == *dest
-                        }
-                        IrOp::LoadReg { src, .. } => *src == *dest,
-                        IrOp::SetProperty { obj, val, .. } => *obj == *dest || *val == *dest,
-                        IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
-                            *what == *dest || args.contains(dest)
-                        }
-                        IrOp::LoadEnumField { args, .. } => args.iter().any(|(_, reg)| reg == dest),
-                        IrOp::MatchEnum { src, .. } => *src == *dest,
-                        _ => false,
-                    };
+                    let reads_dest = Self::reads_reg(future_op, *dest);
 
                     if reads_dest {
                         break;
                     }
 
-                    let writes_dest = match future_op {
-                        IrOp::LoadInt { dest: d, .. }
-                        | IrOp::LoadBool { dest: d, .. }
-                        | IrOp::LoadConst { dest: d, .. }
-                        | IrOp::LoadObject { dest: d, .. }
-                        | IrOp::LoadNative { dest: d, .. }
-                        | IrOp::LoadFun { dest: d, .. }
-                        | IrOp::LoadReg { dest: d, .. }
-                        | IrOp::Binary { dest: d, .. }
-                        | IrOp::GetProperty { dest: d, .. }
-                        | IrOp::GetPropertyDyn { dest: d, .. }
-                        | IrOp::Call { dest: d, .. }
-                        | IrOp::LoadEnumField { dest: d, .. }
-                        | IrOp::MatchEnum { dest: d, .. } => *d == *dest,
-                        _ => false,
-                    };
+                    let writes_dest = Self::writes_dest(future_op) == Some(*dest);
 
                     if writes_dest {
                         is_dead = true;
@@ -772,76 +788,49 @@ impl IrOptimizer {
 
             match &mut op {
                 IrOp::Binary { left, right, .. } => {
-                    if let Some(&src) = copies.get(left) {
-                        *left = src;
-                    }
-                    if let Some(&src) = copies.get(right) {
-                        *right = src;
-                    }
+                    *left = Self::resolve_copy(&copies, *left);
+                    *right = Self::resolve_copy(&copies, *right);
                 }
                 IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
-                    if let Some(&src) = copies.get(what) {
-                        *what = src;
-                    }
+                    *what = Self::resolve_copy(&copies, *what);
                     for arg in args.iter_mut() {
-                        if let Some(&src) = copies.get(arg) {
-                            *arg = src;
-                        }
+                        *arg = Self::resolve_copy(&copies, *arg);
                     }
                 }
                 IrOp::GetProperty { obj, .. } => {
-                    if let Some(&src) = copies.get(obj) {
-                        *obj = src;
-                    }
+                    *obj = Self::resolve_copy(&copies, *obj);
                 }
                 IrOp::GetPropertyDyn { obj, key, .. } => {
-                    if let Some(&src) = copies.get(obj) {
-                        *obj = src;
-                    }
-                    if let Some(&src) = copies.get(key) {
-                        *key = src;
-                    }
+                    *obj = Self::resolve_copy(&copies, *obj);
+                    *key = Self::resolve_copy(&copies, *key);
                 }
                 IrOp::SetProperty { obj, val, .. } => {
-                    if let Some(&src) = copies.get(obj) {
-                        *obj = src;
-                    }
-                    if let Some(&src) = copies.get(val) {
-                        *val = src;
-                    }
+                    *obj = Self::resolve_copy(&copies, *obj);
+                    *val = Self::resolve_copy(&copies, *val);
                 }
                 IrOp::SetPropertyDyn { obj, key, val } => {
-                    if let Some(&src) = copies.get(obj) {
-                        *obj = src;
-                    }
-                    if let Some(&src) = copies.get(key) {
-                        *key = src;
-                    }
-                    if let Some(&src) = copies.get(val) {
-                        *val = src;
-                    }
+                    *obj = Self::resolve_copy(&copies, *obj);
+                    *key = Self::resolve_copy(&copies, *key);
+                    *val = Self::resolve_copy(&copies, *val);
                 }
                 IrOp::Return { value } => {
-                    if let Some(&src) = copies.get(value) {
-                        *value = src;
-                    }
+                    *value = Self::resolve_copy(&copies, *value);
                 }
                 IrOp::JumpNot { condition, .. } => {
-                    if let Some(&src) = copies.get(condition) {
-                        *condition = src;
-                    }
+                    *condition = Self::resolve_copy(&copies, *condition);
                 }
                 IrOp::MatchEnum { src, .. } => {
-                    if let Some(&s) = copies.get(src) {
-                        *src = s;
-                    }
+                    *src = Self::resolve_copy(&copies, *src);
                 }
                 _ => {}
             }
 
             if let IrOp::LoadReg { dest, src } = op {
                 if dest != src {
-                    copies.insert(dest, src);
+                    let root = Self::resolve_copy(&copies, src);
+                    if dest != root {
+                        copies.insert(dest, root);
+                    }
                 }
             } else if let Some(dest) = Self::writes_dest(&op) {
                 copies.remove(&dest);
@@ -872,6 +861,59 @@ impl IrOptimizer {
             | IrOp::MatchEnum { dest, .. } => Some(*dest),
             _ => None,
         }
+    }
+
+    fn reads_reg(op: &IrOp, reg: u8) -> bool {
+        match op {
+            IrOp::Binary { left, right, .. } => *left == reg || *right == reg,
+            IrOp::GetProperty { obj, .. } => *obj == reg,
+            IrOp::GetPropertyDyn { obj, key, .. } => *obj == reg || *key == reg,
+            IrOp::SetPropertyDyn { obj, key, val } => {
+                *obj == reg || *key == reg || *val == reg
+            }
+            IrOp::LoadReg { src, .. } => *src == reg,
+            IrOp::SetProperty { obj, val, .. } => *obj == reg || *val == reg,
+            IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
+                *what == reg || args.contains(&reg)
+            }
+            IrOp::LoadEnumField { args, .. } => args.iter().any(|(_, r)| *r == reg),
+            IrOp::MatchEnum { src, .. } => *src == reg,
+            IrOp::Return { value } => *value == reg,
+            IrOp::JumpNot { condition, .. } => *condition == reg,
+            IrOp::Inc { target } | IrOp::Dec { target } => *target == reg,
+            _ => false,
+        }
+    }
+
+    fn is_reg_read_after(ir: &[IrOp], reg: u8) -> bool {
+        for op in ir {
+            if matches!(op, IrOp::Label(_) | IrOp::Jump { .. }) {
+                return true;
+            }
+            if Self::reads_reg(op, reg) {
+                return true;
+            }
+            if let Some(dest) = Self::writes_dest(op)
+                && dest == reg
+            {
+                return false;
+            }
+            if matches!(op, IrOp::Return { .. } | IrOp::TailCall { .. }) {
+                return false;
+            }
+        }
+        false
+    }
+
+    fn resolve_copy(copies: &HashMap<u8, u8>, mut reg: u8) -> u8 {
+        let mut visited = HashSet::new();
+        while let Some(&src) = copies.get(&reg) {
+            if !visited.insert(reg) {
+                break;
+            }
+            reg = src;
+        }
+        reg
     }
 
     fn jump_threading_pass(ir: Vec<IrOp>) -> Vec<IrOp> {
