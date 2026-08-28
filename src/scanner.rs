@@ -191,8 +191,8 @@ impl Scanner {
             let out_of_bounds = *index >= source.len();
             let no_base_but_valid =
                 rule.base_rule.is_none() && rule.valid_chars.contains(&next_ch.unwrap_or('\x00'));
-            let matches_base =
-                rule.base_rule.is_some() && rule.base_rule.as_ref().unwrap()(&next_ch.unwrap_or('\x00'));
+            let matches_base = rule.base_rule.is_some()
+                && rule.base_rule.as_ref().unwrap()(&next_ch.unwrap_or('\x00'));
             let matches_whole =
                 rule.rule.is_none() || rule.rule.as_ref().unwrap()(&source[start..*index]);
 

@@ -38,14 +38,16 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let arity = attr.arity.unwrap_or(sig_args.len() as u8);
     let internal_name = format_ident!("{}_internal", name);
 
-    // Check if it's a "raw" function: fn(args: Vec<Value>)
+    // Check if it's a "raw" function: fn(args: &[Value]) or fn(args: Vec<Value>)
     let is_raw = if sig_args.len() == 1 {
         if let FnArg::Typed(pat_type) = &sig_args[0] {
-            if let syn::Type::Path(type_path) = &*pat_type.ty {
-                let seg = &type_path.path.segments.last().unwrap().ident;
-                seg == "Vec"
-            } else {
-                false
+            match &*pat_type.ty {
+                syn::Type::Reference(_) => true,
+                syn::Type::Path(type_path) => {
+                    let seg = &type_path.path.segments.last().unwrap().ident;
+                    seg == "Vec" || seg == "slice"
+                }
+                _ => false,
             }
         } else {
             false
@@ -53,7 +55,6 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         false
     };
-
     let wrapper_body = if is_raw {
         if let Some(expected_arity) = attr.arity {
             quote! {
@@ -91,7 +92,7 @@ pub fn native_function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let generated = quote! {
         #[allow(non_snake_case)]
-        #vis fn #internal_name(args: Vec<crate::value::Value>) -> Result<crate::value::Value, String> {
+        #vis fn #internal_name(args: &[crate::value::Value]) -> Result<crate::value::Value, String> {
             #wrapper_body
         }
 
@@ -233,7 +234,7 @@ pub fn parts_native(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate the final wrapper function
     let expanded = quote! {
-        #fn_vis fn #fn_name(args: ::std::vec::Vec<::parts::value::Value>) -> ::std::result::Result<::parts::value::Value, ::std::string::String> {
+        #fn_vis fn #fn_name(args: &[::parts::value::Value]) -> ::std::result::Result<::parts::value::Value, ::std::string::String> {
             // 1. Validate argument count
             if args.len() < #arg_count {
                 return ::std::result::Result::Err(::std::format!(

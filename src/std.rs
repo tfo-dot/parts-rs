@@ -28,7 +28,7 @@ use crate::value::{NativeFunction, Value};
 use parts_macros::native_function;
 
 #[native_function]
-pub fn println(args: Vec<Value>) -> Result<Value, String> {
+pub fn println(args: &[Value]) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
     }
@@ -38,7 +38,7 @@ pub fn println(args: Vec<Value>) -> Result<Value, String> {
 }
 
 #[native_function]
-pub fn print(args: Vec<Value>) -> Result<Value, String> {
+pub fn print(args: &[Value]) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
     }
@@ -272,7 +272,7 @@ pub fn __rand() -> Result<Value, String> {
 }
 
 #[native_function(arity = 1)]
-pub fn __exec(args: Vec<Value>) -> Result<Value, String> {
+pub fn __exec(args: &[Value]) -> Result<Value, String> {
     let raw_cmd = match args.first() {
         Some(Value::String(s)) => s,
         _ => return Ok(Value::err("Expected string command for exec")),
@@ -1906,7 +1906,7 @@ pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunctio
 pub fn register_extra_native(
     name: &'static str,
     arity: u8,
-    call: fn(args: Vec<Value>) -> Result<Value, String>,
+    call: fn(args: &[Value]) -> Result<Value, String>,
 ) {
     let native = NativeFunction {
         name,

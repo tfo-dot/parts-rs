@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use parts::value::{FromPartsObject, FromValue, IntoPartsObject, IntoValue, Value};
+    use parts::value::{
+        FromPartsObject, FromValue, IntoPartsObject, IntoValue, Value, parts_native,
+    };
 
     #[derive(FromPartsObject, IntoPartsObject, Debug, PartialEq, Clone)]
     struct TestMediaItem {
@@ -60,5 +62,17 @@ mod tests {
         let parsed_items = Vec::<String>::from_value(&parts_val).expect("Failed to parse Vec");
 
         assert_eq!(items, parsed_items);
+    }
+
+    #[parts_native]
+    fn multiply_by_two(val: i64) -> Result<i64, String> {
+        Ok(val * 2)
+    }
+
+    #[test]
+    fn test_parts_native_macro() {
+        let args = vec![Value::Int(21)];
+        let res = multiply_by_two(&args).unwrap();
+        assert_eq!(res, Value::Int(42));
     }
 }

@@ -1,6 +1,6 @@
+use crate::parser::BinaryOperator;
 use rustc_hash::FxHashMap;
 
-use crate::compiler::IrOp;
 use crate::define_opcodes;
 
 pub struct Emitter {}
@@ -37,11 +37,11 @@ define_opcodes! {
 }
 
 impl Emitter {
-    fn get_byte_length(op: IrOp) -> i64 {
+    fn get_byte_length(op: &IrOp) -> usize {
         match op {
             IrOp::LoadConst { .. } => 4,
             IrOp::LoadInt { val, .. } => {
-                if (-128..=127).contains(&val) {
+                if (-128..=127).contains(val) {
                     3
                 } else {
                     10
@@ -59,15 +59,15 @@ impl Emitter {
             IrOp::SetProperty { .. } => 5,
             IrOp::SetPropertyDyn { .. } => 4,
             IrOp::Return { .. } => 2,
-            IrOp::Call { args, .. } => (4 + args.len()) as i64,
-            IrOp::TailCall { args, .. } => (3 + args.len()) as i64,
+            IrOp::Call { args, .. } => 4 + args.len(),
+            IrOp::TailCall { args, .. } => 3 + args.len(),
             IrOp::Binary { .. } => 5,
             IrOp::JumpNot { .. } => 4,
             IrOp::Jump { .. } => 3,
             IrOp::Label(_) => 0,
             IrOp::Inc { .. } => 2,
             IrOp::Dec { .. } => 2,
-            IrOp::LoadEnumField { args, .. } => 6 + 9 * args.len() as i64,
+            IrOp::LoadEnumField { args, .. } => 6 + 9 * args.len(),
             IrOp::MatchEnum { .. } => 6,
         }
     }
@@ -81,11 +81,11 @@ impl Emitter {
                 IrOp::Label(id) => {
                     label_offsets.insert(*id, current_byte_offset);
                 }
-                _ => current_byte_offset += Self::get_byte_length(op.clone()),
+                _ => current_byte_offset += Self::get_byte_length(op),
             }
         }
 
-        let mut buff = Vec::new();
+        let mut buff = Vec::with_capacity(current_byte_offset);
 
         for op in ir {
             match op {
@@ -270,5 +270,291 @@ impl Emitter {
         }
 
         buff
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum IrOp {
+    LoadConst {
+        dest: u8,
+        idx: usize,
+    },
+    LoadReg {
+        dest: u8,
+        src: u8,
+    },
+    LoadNative {
+        dest: u8,
+        src: usize,
+    },
+    LoadGlobal {
+        dest: u8,
+        src: u8,
+    },
+    LoadFun {
+        dest: u8,
+        src: usize,
+    },
+    LoadInt {
+        dest: u8,
+        val: i64,
+    },
+    LoadDouble {
+        dest: u8,
+        val: f64,
+    },
+    LoadBool {
+        dest: u8,
+        val: bool,
+    },
+    LoadObject {
+        dest: u8,
+        src: usize,
+    },
+    GetProperty {
+        dest: u8,
+        obj: u8,
+        key: usize,
+    },
+    GetPropertyDyn {
+        dest: u8,
+        obj: u8,
+        key: u8,
+    },
+    SetProperty {
+        obj: u8,
+        key: usize,
+        val: u8,
+    },
+    SetPropertyDyn {
+        obj: u8,
+        key: u8,
+        val: u8,
+    },
+    Return {
+        value: u8,
+    },
+    Call {
+        dest: u8,
+        what: u8,
+        args: Vec<u8>,
+    },
+    TailCall {
+        what: u8,
+        args: Vec<u8>,
+    },
+    Binary {
+        dest: u8,
+        op: BinaryOperator,
+        left: u8,
+        right: u8,
+    },
+    JumpNot {
+        target: usize,
+        condition: u8,
+    },
+    Jump {
+        target: usize,
+    },
+    Inc {
+        target: u8,
+    },
+    Dec {
+        target: u8,
+    },
+    LoadEnumField {
+        dest: u8,
+        enum_idx: usize,
+        tag: u8,
+        args: Vec<(u64, u8)>,
+    },
+    MatchEnum {
+        dest: u8,
+        src: u8,
+        enum_idx: usize,
+        tag: u8,
+    },
+    Label(usize),
+}
+
+impl IrOp {
+    pub fn for_each_reg(&self, mut f: impl FnMut(u8)) {
+        match self {
+            IrOp::LoadConst { dest, .. }
+            | IrOp::LoadNative { dest, .. }
+            | IrOp::LoadFun { dest, .. }
+            | IrOp::LoadInt { dest, .. }
+            | IrOp::LoadDouble { dest, .. }
+            | IrOp::LoadBool { dest, .. }
+            | IrOp::LoadObject { dest, .. } => f(*dest),
+
+            IrOp::LoadReg { dest, src }
+            | IrOp::LoadGlobal { dest, src }
+            | IrOp::MatchEnum { dest, src, .. } => {
+                f(*dest);
+                f(*src);
+            }
+
+            IrOp::GetProperty { dest, obj, .. } => {
+                f(*dest);
+                f(*obj);
+            }
+            IrOp::GetPropertyDyn { dest, obj, key } => {
+                f(*dest);
+                f(*obj);
+                f(*key);
+            }
+            IrOp::SetProperty { obj, val, .. } => {
+                f(*obj);
+                f(*val);
+            }
+            IrOp::SetPropertyDyn { obj, key, val } => {
+                f(*obj);
+                f(*key);
+                f(*val);
+            }
+            IrOp::Return { value } => f(*value),
+            IrOp::Call { dest, what, args } => {
+                f(*dest);
+                f(*what);
+                for a in args {
+                    f(*a);
+                }
+            }
+            IrOp::TailCall { what, args } => {
+                f(*what);
+                for a in args {
+                    f(*a);
+                }
+            }
+            IrOp::Binary {
+                dest, left, right, ..
+            } => {
+                f(*dest);
+                f(*left);
+                f(*right);
+            }
+            IrOp::JumpNot { condition, .. } => f(*condition),
+            IrOp::Inc { target } | IrOp::Dec { target } => f(*target),
+            IrOp::LoadEnumField { dest, args, .. } => {
+                f(*dest);
+                for (_, a) in args {
+                    f(*a);
+                }
+            }
+            IrOp::Jump { .. } | IrOp::Label(_) => {}
+        }
+    }
+    pub fn dest(&self) -> Option<u8> {
+        match self {
+            IrOp::LoadInt { dest, .. }
+            | IrOp::LoadGlobal { dest, .. }
+            | IrOp::LoadDouble { dest, .. }
+            | IrOp::LoadBool { dest, .. }
+            | IrOp::LoadConst { dest, .. }
+            | IrOp::LoadObject { dest, .. }
+            | IrOp::LoadNative { dest, .. }
+            | IrOp::LoadFun { dest, .. }
+            | IrOp::LoadReg { dest, .. }
+            | IrOp::Binary { dest, .. }
+            | IrOp::GetProperty { dest, .. }
+            | IrOp::GetPropertyDyn { dest, .. }
+            | IrOp::Call { dest, .. }
+            | IrOp::LoadEnumField { dest, .. }
+            | IrOp::MatchEnum { dest, .. } => Some(*dest),
+            _ => None,
+        }
+    }
+
+    pub fn for_each_read(&self, mut f: impl FnMut(u8)) {
+        match self {
+            IrOp::Binary { left, right, .. } => {
+                f(*left);
+                f(*right);
+            }
+            IrOp::GetProperty { obj, .. } => f(*obj),
+            IrOp::GetPropertyDyn { obj, key, .. } => {
+                f(*obj);
+                f(*key);
+            }
+            IrOp::SetProperty { obj, val, .. } => {
+                f(*obj);
+                f(*val);
+            }
+            IrOp::SetPropertyDyn { obj, key, val } => {
+                f(*obj);
+                f(*key);
+                f(*val);
+            }
+            IrOp::LoadReg { src, .. }
+            | IrOp::LoadGlobal { src, .. }
+            | IrOp::MatchEnum { src, .. } => {
+                f(*src);
+            }
+            IrOp::Call { what, args, .. } => {
+                f(*what);
+                for a in args {
+                    f(*a);
+                }
+            }
+            IrOp::TailCall { what, args } => {
+                f(*what);
+                for a in args {
+                    f(*a);
+                }
+            }
+            IrOp::LoadEnumField { args, .. } => {
+                for (_, a) in args {
+                    f(*a);
+                }
+            }
+            IrOp::Return { value } => f(*value),
+            IrOp::JumpNot { condition, .. } => f(*condition),
+            IrOp::Inc { target } | IrOp::Dec { target } => f(*target),
+            _ => {}
+        }
+    }
+
+    pub fn reads_reg(&self, reg: u8) -> bool {
+        let mut found = false;
+        self.for_each_read(|r| {
+            if r == reg {
+                found = true;
+            }
+        });
+        found
+    }
+
+    pub fn has_side_effects(&self) -> bool {
+        matches!(
+            self,
+            IrOp::Call { .. }
+                | IrOp::TailCall { .. }
+                | IrOp::SetProperty { .. }
+                | IrOp::SetPropertyDyn { .. }
+                | IrOp::Return { .. }
+                | IrOp::Jump { .. }
+                | IrOp::JumpNot { .. }
+                | IrOp::Label(_)
+        )
+    }
+
+    pub fn is_terminator(&self) -> bool {
+        matches!(
+            self,
+            IrOp::Return { .. } | IrOp::TailCall { .. } | IrOp::Jump { .. }
+        )
+    }
+
+    pub fn compute_frame_size(arity: u8, ir: &[IrOp]) -> u8 {
+        let mut max_reg = arity.saturating_sub(1);
+        for op in ir {
+            op.for_each_reg(|r| {
+                if r > max_reg {
+                    max_reg = r;
+                }
+            });
+        }
+        max_reg.saturating_add(1).max(arity).max(1)
     }
 }

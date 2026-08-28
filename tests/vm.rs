@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
     use parts::emitter::OpCode;
-    use parts::value::Value;
+    use parts::value::{Function, Value};
     use parts::vm::VM;
+    use std::rc::Rc;
 
     #[test]
     fn check_double_return() {
@@ -30,16 +31,11 @@ mod tests {
             1,
         ];
 
-        let constants = vec![Value::Fun {
+        let constants = vec![Value::Fun(Rc::new(Function {
             arity: 0,
-            body: vec![
-                OpCode::LoadBool as u8,
-                0,
-                1,
-                OpCode::Return as u8,
-                0,
-            ],
-        }];
+            frame_size: 1,
+            code: vec![OpCode::LoadBool as u8, 0, 1, OpCode::Return as u8, 0].into(),
+        }))];
 
         let mut vm = VM::new(code, constants);
 
@@ -67,10 +63,11 @@ mod tests {
             2,
         ];
 
-        let constants = vec![Value::Fun {
+        let constants = vec![Value::Fun(Rc::new(Function {
             arity: 0,
-            body: vec![OpCode::Return as u8, 0],
-        }];
+            frame_size: 1,
+            code: vec![OpCode::Return as u8, 0].into(),
+        }))];
 
         let mut vm = VM::new(code, constants);
 
@@ -153,10 +150,11 @@ mod tests {
         ];
 
         let constants = vec![
-            Value::Fun {
+            Value::Fun(Rc::new(Function {
                 arity: 0,
-                body: func_body,
-            },
+                frame_size: 2,
+                code: func_body.into(),
+            })),
             Value::Hash(power_hash),
         ];
 

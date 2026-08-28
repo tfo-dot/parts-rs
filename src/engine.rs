@@ -42,7 +42,7 @@ impl Engine {
         &mut self,
         name: &'static str,
         arity: u8,
-        call: fn(args: Vec<Value>) -> Result<Value, String>,
+        call: impl Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'static,
     ) {
         self.natives.push(NativeFunction {
             name,
@@ -64,13 +64,15 @@ impl Engine {
             .parse_all()
             .map_err(|e| format!("Parser error: {}", e))?;
 
-        let optimizer = AstOptimizer::new();
+        let mut optimizer = AstOptimizer::new();
+        optimizer.collect_all(&ast);
         let mut changed = true;
         while changed {
             changed = optimizer.optimize_all(&mut ast);
         }
 
         let mut compiler = Compiler::with_natives(self.import_path.clone(), self.natives.clone());
+        compiler.optimize = true;
         let ir = compiler.compile_all(ast).map_err(|e| {
             format!(
                 "Compiler error:\n{}",
@@ -86,7 +88,6 @@ impl Engine {
                     .join("\n")
             )
         })?;
-
         let ir = IrOptimizer::optimize(ir);
         let bytecode = Emitter {}.emit(ir);
 

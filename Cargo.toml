@@ -18,3 +18,7 @@ serde_json = "1.0"
 [profile.samply]
 inherits = "release"
 debug = true
+
+[[bench]]
+name = "interpreter_bench"
+harness = false

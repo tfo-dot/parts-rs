@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn mod_pow2_neg_divisor_1024_large() {
         let engine = Engine::new();
-        assert_eq!(exec_int(&engine, "let x = 0 - 1000000; return x % 1024;"), -576);
+        assert_eq!(
+            exec_int(&engine, "let x = 0 - 1000000; return x % 1024;"),
+            -576
+        );
     }
 
     #[test]
@@ -154,7 +157,10 @@ mod tests {
         assert_eq!(exec_int(&engine, "let x = 0 - 5; return x * 2;"), -10);
         assert_eq!(exec_int(&engine, "let x = 0 - 5; return x * 4;"), -20);
         assert_eq!(exec_int(&engine, "let x = 0 - 5; return x * 8;"), -40);
-        assert_eq!(exec_int(&engine, "let x = 0 - 1000000; return x * 8;"), -8_000_000);
+        assert_eq!(
+            exec_int(&engine, "let x = 0 - 1000000; return x * 8;"),
+            -8_000_000
+        );
     }
 
     #[test]
@@ -526,5 +532,43 @@ mod tests {
         let calls = exec_int(&engine, "return peek();");
         assert_eq!(result, 3, "unexpected result (calls={})", calls);
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn ir_constant_folding_binary() {
+        use parts::compiler::IrOp;
+        use parts::optimize::IrOptimizer;
+        use parts::parser::BinaryOperator;
+
+        let ir = vec![
+            IrOp::LoadInt { dest: 0, val: 15 },
+            IrOp::LoadInt { dest: 1, val: 25 },
+            IrOp::Binary {
+                dest: 2,
+                op: BinaryOperator::Add,
+                left: 0,
+                right: 1,
+            },
+            IrOp::Return { value: 2 },
+        ];
+
+        let optimized = IrOptimizer::optimize(ir);
+        assert!(optimized.contains(&IrOp::LoadInt { dest: 2, val: 40 }));
+    }
+
+    #[test]
+    fn ir_dead_store_elimination_pure_ops() {
+        use parts::compiler::IrOp;
+        use parts::optimize::IrOptimizer;
+        let ir = vec![
+            IrOp::LoadDouble { dest: 0, val: 3.5 },
+            IrOp::LoadDouble { dest: 0, val: 2.5 },
+            IrOp::Return { value: 0 },
+        ];
+
+        let optimized = IrOptimizer::optimize(ir);
+        // The first LoadDouble(3.14) into dest: 0 was immediately overwritten and never read
+        assert_eq!(optimized.len(), 2);
+        assert_eq!(optimized[0], IrOp::LoadDouble { dest: 0, val: 2.5 });
     }
 }

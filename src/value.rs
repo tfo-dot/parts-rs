@@ -8,16 +8,30 @@ use std::fmt::Display;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    pub arity: u8,
+    pub frame_size: u8,
+    pub code: Rc<[u8]>,
+}
+
+impl Function {
+    pub fn new(arity: u8, frame_size: u8, code: Vec<u8>) -> Self {
+        Self {
+            arity,
+            frame_size,
+            code: code.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
     String(Rc<String>),
     Ref(Rc<String>),
-    Fun {
-        arity: u8,
-        body: Vec<u8>,
-    },
+    Fun(Rc<Function>),
     NativeFun(NativeFunction),
     Object(Rc<RefCell<FxHashMap<u64, Value>>>),
     Hash(u64),
@@ -25,7 +39,7 @@ pub enum Value {
     EnumField {
         const_idx: usize,
         tag: u8,
-        args: Vec<(u64, Value)>,
+        args: Rc<[(u64, Value)]>,
     },
     Bytes(Rc<RefCell<Vec<u8>>>),
 }
@@ -60,7 +74,12 @@ impl Hash for Value {
                 let ptr = Rc::as_ptr(obj) as usize;
                 ptr.hash(state);
             }
-            Value::Fun { .. } | Value::NativeFun(_) => {
+            Value::Fun(fun) => {
+                state.write_u8(4);
+                let ptr = Rc::as_ptr(fun) as usize;
+                ptr.hash(state);
+            }
+            Value::NativeFun(_) => {
                 state.write_u8(4);
                 let ptr = self as *const _ as usize;
                 ptr.hash(state);
@@ -81,7 +100,7 @@ impl Hash for Value {
                 state.write_u8(7);
                 state.write_usize(*const_idx);
                 state.write_u8(*tag);
-                for (k, v) in args {
+                for (k, v) in args.iter() {
                     k.hash(state);
                     v.hash(state);
                 }
@@ -120,10 +139,10 @@ impl Value {
         Value::EnumField {
             const_idx: 0,
             tag: 0,
-            args: vec![(
+            args: Rc::from([(
                 Value::String(std::rc::Rc::new("val".to_string())).get_hash(),
                 val.into(),
-            )],
+            )]),
         }
     }
 
@@ -131,10 +150,10 @@ impl Value {
         Value::EnumField {
             const_idx: 0,
             tag: 1,
-            args: vec![(
+            args: Rc::from([(
                 Value::String(std::rc::Rc::new("err".to_string())).get_hash(),
                 err.into(),
-            )],
+            )]),
         }
     }
 
@@ -163,10 +182,10 @@ impl Value {
         Value::EnumField {
             const_idx: 1,
             tag: 0,
-            args: vec![(
+            args: Rc::from([(
                 Value::String(std::rc::Rc::new("val".to_string())).get_hash(),
                 val.into(),
-            )],
+            )]),
         }
     }
 
@@ -174,10 +193,9 @@ impl Value {
         Value::EnumField {
             const_idx: 1,
             tag: 1,
-            args: vec![],
+            args: Rc::from([]),
         }
     }
-
     pub fn is_some(&self) -> bool {
         matches!(
             self,
@@ -205,9 +223,13 @@ impl Value {
 
     pub fn call(&self, args: Vec<Value>, constants: Vec<Value>) -> Result<Option<Value>, String> {
         match self {
-            Value::Fun { arity, body } => {
-                if args.len() != *arity as usize {
-                    return Err(format!("Expected {} arguments, got {}", arity, args.len()));
+            Value::Fun(fun) => {
+                if args.len() != fun.arity as usize {
+                    return Err(format!(
+                        "Expected {} arguments, got {}",
+                        fun.arity,
+                        args.len()
+                    ));
                 }
 
                 use crate::vm::{Frame, VM};
@@ -221,7 +243,7 @@ impl Value {
                 vm.run_with_frame(Frame {
                     pointer: 0,
                     ip: 0,
-                    bytecode: Rc::new(body.to_vec()),
+                    bytecode: Rc::clone(&fun.code),
                     return_reg: 0,
                 })
                 .map_err(|e| format!("VM Error: {:?}", e))
@@ -234,7 +256,7 @@ impl Value {
                         args.len()
                     ));
                 }
-                (native.call)(args).map(Some)
+                (native.call)(&args).map(Some)
             }
             _ => Err("Value is not callable".to_string()),
         }
@@ -282,11 +304,12 @@ impl Value {
                 buffer.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 buffer.extend_from_slice(s.as_bytes());
             }
-            Value::Fun { arity, body } => {
+            Value::Fun(fun) => {
                 buffer.push(4);
-                buffer.push(*arity);
-                buffer.extend_from_slice(&(body.len() as u64).to_le_bytes());
-                buffer.extend_from_slice(body);
+                buffer.push(fun.arity);
+                buffer.push(fun.frame_size);
+                buffer.extend_from_slice(&(fun.code.len() as u64).to_le_bytes());
+                buffer.extend_from_slice(&fun.code);
             }
             Value::Object(ref_cell) => {
                 buffer.push(5);
@@ -325,7 +348,7 @@ impl Value {
 
                 buffer.push(args.len() as u8);
 
-                for (k, v) in args {
+                for (k, v) in args.iter() {
                     buffer.extend_from_slice(&k.to_le_bytes());
                     v.encode(buffer);
                 }
@@ -381,6 +404,8 @@ impl Value {
                     idx += 1;
                     let arity = raw[idx];
                     idx += 1;
+                    let frame_size = raw[idx];
+                    idx += 1;
 
                     let len_bytes: [u8; 8] = raw[idx..idx + 8].try_into().unwrap();
                     let len = u64::from_le_bytes(len_bytes) as usize;
@@ -389,10 +414,11 @@ impl Value {
                     let body = &raw[idx..idx + len];
                     idx += len;
 
-                    values.push(Value::Fun {
+                    values.push(Value::Fun(Rc::new(Function {
                         arity,
-                        body: body.to_vec(),
-                    });
+                        frame_size,
+                        code: body.to_vec().into(),
+                    })));
                 }
                 5 => {
                     idx += 1;
@@ -472,7 +498,7 @@ impl Value {
                     values.push(Value::EnumField {
                         const_idx,
                         tag,
-                        args,
+                        args: args.into(),
                     });
                 }
                 10 => {
@@ -548,7 +574,7 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{}", s), // Quoted for clarity
             Value::Ref(r) => write!(f, "&{}", r),   // Prefixed with & to show it's a ref
-            Value::Fun { arity, .. } => write!(f, "<function/{}>", arity),
+            Value::Fun(fun) => write!(f, "<function/{}>", fun.arity),
             Value::NativeFun(_) => write!(f, "<native fun>"),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
@@ -777,7 +803,7 @@ pub use parts_macros::{FromPartsObject, IntoPartsObject, parts_native};
 
 // Native
 
-pub type NativeFn = std::sync::Arc<dyn Fn(Vec<Value>) -> Result<Value, String> + Send + Sync>;
+pub type NativeFn = std::sync::Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct NativeFunction {

@@ -9,7 +9,7 @@ use std::rc::Rc;
 pub struct Frame {
     pub pointer: usize,
     pub ip: usize,
-    pub bytecode: Rc<Vec<u8>>,
+    pub bytecode: Rc<[u8]>,
     pub return_reg: u8,
 }
 
@@ -60,6 +60,7 @@ pub struct VM {
     exit_value: Option<Value>,
     pub patch_table: FxHashMap<u64, FxHashMap<u64, Value>>,
     pub native_functions: Vec<NativeFunction>,
+    pub native_map: FxHashMap<u64, NativeFunction>,
 }
 
 impl VM {
@@ -72,13 +73,21 @@ impl VM {
             frames: vec![Frame {
                 pointer: 0,
                 ip: 0,
-                bytecode: Rc::new(code),
+                bytecode: code.into(),
                 return_reg: 0,
             }],
             stack,
             constants,
             exit_value: None,
             patch_table: FxHashMap::default(),
+            native_map: StdModule::get_core()
+                .functions
+                .into_iter()
+                .map(|f| {
+                    let hash = Value::String(f.name.to_string().into()).get_hash();
+                    (hash, f)
+                })
+                .collect(),
             native_functions: StdModule::get_core().functions,
         }
     }
@@ -89,7 +98,11 @@ impl VM {
         natives: Vec<NativeFunction>,
     ) -> Self {
         let mut vm = Self::new(code, constants);
-        vm.native_functions.extend(natives);
+        for f in natives {
+            let hash = Value::String(f.name.to_string().into()).get_hash();
+            vm.native_map.insert(hash, f.clone());
+            vm.native_functions.push(f);
+        }
         vm
     }
 
@@ -97,7 +110,6 @@ impl VM {
         self.frames = vec![frame];
         self.run()
     }
-
 
     pub fn run(&mut self) -> Result<Option<Value>, Error> {
         if self.frames.is_empty() {
@@ -168,8 +180,7 @@ impl VM {
                     let idx = u16::from_le_bytes(bytes) as usize;
                     if let Some(Value::Object(ref_cell)) = self.constants.get(idx) {
                         let cloned_map = ref_cell.borrow().clone();
-                        self.stack[fp + dest] =
-                            Value::Object(Rc::new(RefCell::new(cloned_map)));
+                        self.stack[fp + dest] = Value::Object(Rc::new(RefCell::new(cloned_map)));
                     } else {
                         self.stack[fp + dest] =
                             Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
@@ -185,8 +196,7 @@ impl VM {
 
                     let mut args = Vec::with_capacity(count as usize);
                     for _ in 0..count {
-                        let raw_key_bytes: [u8; 8] =
-                            code[ip..ip + 8].try_into().unwrap();
+                        let raw_key_bytes: [u8; 8] = code[ip..ip + 8].try_into().unwrap();
                         let hash = u64::from_le_bytes(raw_key_bytes);
                         let arg_reg = code[ip + 8] as usize;
                         ip += 9;
@@ -198,7 +208,7 @@ impl VM {
                     self.stack[fp + dest] = Value::EnumField {
                         const_idx: enum_idx as usize,
                         tag,
-                        args,
+                        args: args.into(),
                     };
                 }
                 0x10 => {
@@ -230,9 +240,9 @@ impl VM {
                     let arg_count = code[ip + 2];
                     ip += 3;
 
-                    let func_val = self.stack[fp + fun_reg as usize].clone();
-                    match func_val {
-                        Value::Fun { arity: _, body } => {
+                    match &self.stack[fp + fun_reg as usize] {
+                        Value::Fun(fun) => {
+                            let fun = Rc::clone(fun);
                             let new_fp = self.stack.len();
 
                             for _ in 0..arg_count {
@@ -242,7 +252,8 @@ impl VM {
                                 self.stack.push(arg_val);
                             }
 
-                            let padding = 256 - arg_count as usize;
+                            let padding =
+                                (fun.frame_size as usize).saturating_sub(arg_count as usize);
                             self.stack.resize(self.stack.len() + padding, Value::Int(0));
 
                             self.frames[frame_idx].ip = ip;
@@ -250,7 +261,7 @@ impl VM {
                                 ip: 0,
                                 pointer: new_fp,
                                 return_reg: dest_reg,
-                                bytecode: Rc::new(body),
+                                bytecode: Rc::clone(&fun.code),
                             });
                             frame_idx = self.frames.len() - 1;
                             fp = new_fp;
@@ -258,17 +269,27 @@ impl VM {
                             code = Rc::clone(&self.frames[frame_idx].bytecode);
                         }
                         Value::NativeFun(native_fn) => {
-                            let mut args = Vec::with_capacity(arg_count as usize);
-                            for _ in 0..arg_count {
-                                let arg_reg = code[ip] as usize;
-                                ip += 1;
-                                let arg = self.stack[fp + arg_reg].clone();
-                                args.push(arg);
+                            let native_fn = native_fn.clone();
+                            let result = if (arg_count as usize) <= 8 {
+                                let mut small_args = [const { Value::Int(0) }; 8];
+                                for slot in small_args.iter_mut().take(arg_count as usize) {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    *slot = self.stack[fp + arg_reg].clone();
+                                }
+                                self.frames[frame_idx].ip = ip;
+                                (native_fn.call)(&small_args[..arg_count as usize])
+                            } else {
+                                let mut args = Vec::with_capacity(arg_count as usize);
+                                for _ in 0..arg_count {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    args.push(self.stack[fp + arg_reg].clone());
+                                }
+                                self.frames[frame_idx].ip = ip;
+                                (native_fn.call)(&args)
                             }
-
-                            self.frames[frame_idx].ip = ip;
-
-                            let result = (native_fn.call)(args).map_err(|e| {
+                            .map_err(|e| {
                                 Error::NativeFunctionFailed(format!(
                                     "Error in native function '{}': {}, IP: {}",
                                     native_fn.name, e, ip
@@ -277,17 +298,7 @@ impl VM {
 
                             self.stack[fp + dest_reg as usize] = result;
                         }
-                        _ => {
-                            eprintln!(
-                                "UnexpectedTypeCall in func: dest_reg = {}, fun_reg = {}, func_val = {:?}, fp = {}, stack_slice = {:?}",
-                                dest_reg,
-                                fun_reg,
-                                func_val,
-                                fp,
-                                &self.stack[fp..std::cmp::min(self.stack.len(), fp + 20)]
-                            );
-                            return Err(Error::UnexpectedTypeCall);
-                        }
+                        _ => return Err(Error::UnexpectedTypeCall),
                     }
                 }
                 0x13 => {
@@ -311,9 +322,9 @@ impl VM {
                     let arg_count = code[ip + 1] as usize;
                     ip += 2;
 
-                    let func_val = self.stack[fp + fun_reg as usize].clone();
-                    match func_val {
-                        Value::Fun { arity: _, body } => {
+                    match &self.stack[fp + fun_reg as usize] {
+                        Value::Fun(fun) => {
+                            let fun = Rc::clone(fun);
                             let mut temp_args = Vec::with_capacity(arg_count);
                             for _ in 0..arg_count {
                                 let arg_reg_idx = code[ip] as usize;
@@ -325,22 +336,38 @@ impl VM {
                                 self.stack[fp + i] = arg;
                             }
 
-                            self.stack.truncate(fp + 256);
+                            let target_len = fp + fun.frame_size as usize;
+                            if self.stack.len() < target_len {
+                                self.stack.resize(target_len, Value::Int(0));
+                            } else {
+                                self.stack.truncate(target_len);
+                            }
 
                             ip = 0;
-                            code = Rc::new(body);
+                            code = Rc::clone(&fun.code);
                             self.frames[frame_idx].bytecode = Rc::clone(&code);
                             self.frames[frame_idx].ip = 0;
                         }
                         Value::NativeFun(native_fn) => {
-                            let mut args = Vec::with_capacity(arg_count);
-                            for _ in 0..arg_count {
-                                let arg_reg = code[ip] as usize;
-                                ip += 1;
-                                args.push(self.stack[fp + arg_reg].clone());
+                            let native_fn = native_fn.clone();
+                            let result = if arg_count <= 8 {
+                                let mut small_args = [const { Value::Int(0) }; 8];
+                                for slot in small_args.iter_mut().take(arg_count) {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    *slot = self.stack[fp + arg_reg].clone();
+                                }
+                                (native_fn.call)(&small_args[..arg_count])
+                            } else {
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    args.push(self.stack[fp + arg_reg].clone());
+                                }
+                                (native_fn.call)(&args)
                             }
-
-                            let result = (native_fn.call)(args).map_err(|e| {
+                            .map_err(|e| {
                                 Error::NativeFunctionFailed(format!(
                                     "Error in native function '{}': {}, IP: {}",
                                     native_fn.name, e, ip
@@ -525,18 +552,22 @@ impl VM {
                     let hash_idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
                     ip += 3;
 
-                    let hash = match self.constants.get(hash_idx) {
-                        Some(Value::Hash(h)) => Value::Hash(*h),
+                    let hash_val = match self.constants.get(hash_idx) {
+                        Some(Value::Hash(h)) => *h,
                         _ => panic!("Expected hash constant"),
                     };
-                    let found = self
-                        .native_functions
-                        .iter()
-                        .find(|f| {
-                            Value::Hash(Value::String(f.name.to_string().into()).get_hash()) == hash
-                        })
-                        .unwrap()
-                        .clone();
+                    let found = match self.native_map.get(&hash_val) {
+                        Some(f) => f.clone(),
+                        None => self
+                            .native_functions
+                            .iter()
+                            .find(|f| {
+                                Value::Hash(Value::String(f.name.to_string().into()).get_hash())
+                                    == Value::Hash(hash_val)
+                            })
+                            .expect("Native function not found")
+                            .clone(),
+                    };
                     self.stack[fp + dest] = Value::NativeFun(found);
                 }
                 0x26 => {
@@ -609,7 +640,7 @@ impl VM {
             Value::Bool(raw) => *raw,
             Value::String(raw) => !raw.is_empty(),
             Value::Ref(_) | Value::Hash(_) => unreachable!(),
-            Value::Fun { .. } => true,
+            Value::Fun(_) => true,
             Value::NativeFun(_) => true,
             Value::Object(items) => !items.borrow().is_empty(),
             Value::EnumDefinition(_) | Value::EnumField { .. } => true,
@@ -632,13 +663,21 @@ impl VM {
                 0 => Value::Int(a + b),
                 1 => Value::Int(a - b),
                 2 => Value::Int(a * b),
-                3 => Value::Int(if b != 0 { a / b } else { panic!("division by zero") }),
+                3 => Value::Int(if b != 0 {
+                    a / b
+                } else {
+                    panic!("division by zero")
+                }),
                 4 => Value::Bool(a == b),
                 5 => Value::Bool(a > b),
                 6 => Value::Bool(a < b),
                 7 => Value::Bool(a >= b),
                 8 => Value::Bool(a <= b),
-                9 => Value::Int(if b != 0 { a % b } else { panic!("modulo by zero") }),
+                9 => Value::Int(if b != 0 {
+                    a % b
+                } else {
+                    panic!("modulo by zero")
+                }),
                 10 => Value::Int(a & b),
                 11 => Value::Int(a | b),
                 12 => Value::Int(a ^ b),
@@ -674,5 +713,4 @@ impl VM {
             _ => panic!("UnexpectedType bin"),
         }
     }
-
 }

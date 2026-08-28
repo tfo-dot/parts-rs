@@ -83,7 +83,10 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             for i in 0..args_count {
                 args.push(code[offset + 6 + (i as usize) * 9 + 8]);
             }
-            println!("LOAD_ENUM    Reg: {}, Enum: {}, tag: {} fields: {:?}", reg, enum_idx, tag, args);
+            println!(
+                "LOAD_ENUM    Reg: {}, Enum: {}, tag: {} fields: {:?}",
+                reg, enum_idx, tag, args
+            );
             offset + 6 + 9 * args_count as usize
         }
         OpCode::Call => {
@@ -111,10 +114,7 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
                 args.push(code[offset + 3 + i as usize]);
             }
 
-            println!(
-                "{:-12} FuncReg: {:<3} Args: {:?}",
-                "TAIL_CALL", func, args
-            );
+            println!("{:-12} FuncReg: {:<3} Args: {:?}", "TAIL_CALL", func, args);
             offset + 3 + args_count as usize
         }
         OpCode::LoadNative => {

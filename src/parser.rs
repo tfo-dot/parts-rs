@@ -491,9 +491,6 @@ pub enum Ast {
     Return {
         value: Box<Ast>,
     },
-    Raise {
-        value: Box<Ast>,
-    },
     Call {
         what: Box<Ast>,
         args: Vec<Ast>,

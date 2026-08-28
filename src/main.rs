@@ -264,7 +264,7 @@ fn get_code(config: Cli) -> CompilerOutput {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     );
-
+    c.optimize = config.optimize;
     let start_time_p = Instant::now();
 
     let mut ir = match c.compile_all(ast) {
@@ -432,7 +432,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     );
-
+    c.optimize = config.optimize;
     let mut ir = match c.compile_all(ast) {
         Ok(ir) => ir,
         Err(errors) => {

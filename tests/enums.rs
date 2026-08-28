@@ -349,10 +349,10 @@ mod tests {
         let val = Value::EnumField {
             const_idx: 2,
             tag: 1,
-            args: vec![
+            args: Rc::from([
                 (12345, Value::Int(42)),
                 (67890, Value::String(Rc::new("test".to_string()))),
-            ],
+            ]),
         };
 
         // Display test

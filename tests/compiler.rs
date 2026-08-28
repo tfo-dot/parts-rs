@@ -10,7 +10,7 @@ mod tests {
     use parts::parser::Ast;
     use parts::parser::BinaryOperator;
     use parts::parser::Value as ParserValue;
-    use parts::value::Value;
+    use parts::value::{Function, Value};
     use rustc_hash::FxHashMap;
 
     fn assert_compile(src: Vec<Ast>, expected: Vec<IrOp>) {
@@ -155,16 +155,19 @@ mod tests {
             vec![IrOp::LoadConst { dest: 0, idx: 0 }],
             vec![(
                 0,
-                Value::Fun {
+                Value::Fun(Rc::new(Function {
                     arity: 0,
-                    body: Emitter {}.emit(vec![
-                        IrOp::LoadBool {
-                            dest: 0,
-                            val: false,
-                        },
-                        IrOp::Return { value: 0 },
-                    ]),
-                },
+                    frame_size: 1,
+                    code: Emitter {}
+                        .emit(vec![
+                            IrOp::LoadBool {
+                                dest: 0,
+                                val: false,
+                            },
+                            IrOp::Return { value: 0 },
+                        ])
+                        .into(),
+                })),
             )],
         );
     }
@@ -181,16 +184,19 @@ mod tests {
             vec![IrOp::LoadConst { dest: 0, idx: 0 }],
             vec![(
                 0,
-                Value::Fun {
+                Value::Fun(Rc::new(Function {
                     arity: 1,
-                    body: Emitter {}.emit(vec![
-                        IrOp::LoadBool {
-                            dest: 1,
-                            val: false,
-                        },
-                        IrOp::Return { value: 1 },
-                    ]),
-                },
+                    frame_size: 2,
+                    code: Emitter {}
+                        .emit(vec![
+                            IrOp::LoadBool {
+                                dest: 1,
+                                val: false,
+                            },
+                            IrOp::Return { value: 1 },
+                        ])
+                        .into(),
+                })),
             )],
         );
     }
@@ -207,16 +213,19 @@ mod tests {
             vec![IrOp::LoadConst { dest: 0, idx: 0 }],
             vec![(
                 0,
-                Value::Fun {
+                Value::Fun(Rc::new(Function {
                     arity: 2,
-                    body: Emitter {}.emit(vec![
-                        IrOp::LoadBool {
-                            dest: 2,
-                            val: false,
-                        },
-                        IrOp::Return { value: 2 },
-                    ]),
-                },
+                    frame_size: 3,
+                    code: Emitter {}
+                        .emit(vec![
+                            IrOp::LoadBool {
+                                dest: 2,
+                                val: false,
+                            },
+                            IrOp::Return { value: 2 },
+                        ])
+                        .into(),
+                })),
             )],
         );
     }

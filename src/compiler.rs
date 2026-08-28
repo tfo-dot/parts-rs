@@ -1,13 +1,14 @@
 use crate::emitter::Emitter;
+use crate::emitter::IrOp;
+use crate::optimize::IrOptimizer;
 use crate::parser::BinaryOperator;
 use crate::parser::EnumVariant;
 use crate::parser::ImportType;
 use crate::parser::Parser;
 use crate::parser::Value as ParserValue;
-use crate::value::{NativeFunction, StdDefinition, Value};
+use crate::value::{Function, NativeFunction, StdDefinition, Value};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -48,16 +49,21 @@ impl Error {
             ErrorLevel::Error => crate::diagnostic::DiagnosticLevel::Error,
             ErrorLevel::Warning => crate::diagnostic::DiagnosticLevel::Warning,
         };
+
         let mut diag = crate::diagnostic::Diagnostic::new(level, &self.message);
+
         if self.line > 0 {
             diag = diag.with_location(self.line, self.column);
         }
+
         if let Some(src) = source {
             diag = diag.with_source(src);
         }
+
         if let Some(f) = file {
             diag = diag.with_file(f);
         }
+
         diag
     }
 }
@@ -150,6 +156,7 @@ pub struct Compiler {
     std: StdDefinition,
     source: PathBuf,
     next_label_id: usize,
+    pub optimize: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,110 +164,6 @@ pub struct EnumDef {
     name: String,
     variants: Vec<EnumVariant>,
     idx: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
-pub enum IrOp {
-    LoadConst {
-        dest: u8,
-        idx: usize,
-    },
-    LoadReg {
-        dest: u8,
-        src: u8,
-    },
-    LoadNative {
-        dest: u8,
-        src: usize,
-    },
-    LoadGlobal {
-        dest: u8,
-        src: u8,
-    },
-    LoadFun {
-        dest: u8,
-        src: usize,
-    },
-    LoadInt {
-        dest: u8,
-        val: i64,
-    },
-    LoadDouble {
-        dest: u8,
-        val: f64,
-    },
-    LoadBool {
-        dest: u8,
-        val: bool,
-    },
-    LoadObject {
-        dest: u8,
-        src: usize,
-    },
-    GetProperty {
-        dest: u8,
-        obj: u8,
-        key: usize,
-    },
-    GetPropertyDyn {
-        dest: u8,
-        obj: u8,
-        key: u8,
-    },
-    SetProperty {
-        obj: u8,
-        key: usize,
-        val: u8,
-    },
-    SetPropertyDyn {
-        obj: u8,
-        key: u8,
-        val: u8,
-    },
-    Return {
-        value: u8,
-    },
-    Call {
-        dest: u8,
-        what: u8,
-        args: Vec<u8>,
-    },
-    TailCall {
-        what: u8,
-        args: Vec<u8>,
-    },
-    Binary {
-        dest: u8,
-        op: BinaryOperator,
-        left: u8,
-        right: u8,
-    },
-    JumpNot {
-        target: usize,
-        condition: u8,
-    },
-    Jump {
-        target: usize,
-    },
-    Inc {
-        target: u8,
-    },
-    Dec {
-        target: u8,
-    },
-    LoadEnumField {
-        dest: u8,
-        enum_idx: usize,
-        tag: u8,
-        args: Vec<(u64, u8)>,
-    },
-    MatchEnum {
-        dest: u8,
-        src: u8,
-        enum_idx: usize,
-        tag: u8,
-    },
-    Label(usize),
 }
 
 impl Compiler {
@@ -275,6 +178,7 @@ impl Compiler {
             next_label_id: 0,
             source,
             enums: vec![],
+            optimize: false,
         };
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
@@ -305,6 +209,7 @@ impl Compiler {
             idx: 1,
         });
 
+        compiler.optimize = false;
         compiler
     }
 
@@ -344,6 +249,7 @@ impl Compiler {
         self.current().next_free_register += 1;
         address
     }
+
     fn get_or_add_constant(&mut self, val: Value) -> usize {
         if let Some(&idx) = self.constant_map.get(&val) {
             idx
@@ -370,7 +276,6 @@ impl Compiler {
                 self.source.join(&source)
             };
 
-            // Normalize the virtual path (remove @std prefix if present for lookup)
             let mut internal_path = virtual_path.clone();
             if internal_path.starts_with("@std") {
                 internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
@@ -404,13 +309,18 @@ impl Compiler {
                 Ok(c) => c,
                 Err(e) => {
                     self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
-                    return Value::Fun {
+                    return Value::Fun(Rc::new(Function {
                         arity: 0,
-                        body: vec![],
-                    };
+                        frame_size: 1,
+                        code: Rc::from([]),
+                    }));
                 }
             };
-            (content, canonical_path.parent().unwrap().to_path_buf(), None)
+            (
+                content,
+                canonical_path.parent().unwrap().to_path_buf(),
+                None,
+            )
         };
 
         let import_ast = if let Some(ref path_key) = internal_path_opt {
@@ -427,10 +337,11 @@ impl Compiler {
                             0,
                             format!("syntax error in imported module '{}': {}", source, e),
                         );
-                        return Value::Fun {
+                        return Value::Fun(Rc::new(Function {
                             arity: 0,
-                            body: vec![],
-                        };
+                            frame_size: 1,
+                            code: Rc::from([]),
+                        }));
                     }
                 };
                 cache.insert(path_key.clone(), ast.clone());
@@ -446,10 +357,11 @@ impl Compiler {
                         0,
                         format!("syntax error in imported module '{}': {}", source, e),
                     );
-                    return Value::Fun {
+                    return Value::Fun(Rc::new(Function {
                         arity: 0,
-                        body: vec![],
-                    };
+                        frame_size: 1,
+                        code: Rc::from([]),
+                    }));
                 }
             }
         };
@@ -458,12 +370,14 @@ impl Compiler {
         self.source = new_source_path;
 
         let mut mod_ctx = Context::new();
+
         for item in &import_ast {
             if let Ast::Declare { name, .. } = item {
                 let reg = mod_ctx.add_local(name.clone());
                 mod_ctx.top_level_names.insert(name.clone(), reg);
             }
         }
+
         self.contexts.push(mod_ctx);
 
         for item in import_ast {
@@ -471,6 +385,7 @@ impl Compiler {
 
             self.current().next_free_register = self.current().local_count;
         }
+
         let obj_reg = self.next_free_address();
         let obj_val = Value::Object(Rc::new(RefCell::new(FxHashMap::default())));
         let obj_idx = self.get_or_add_constant(obj_val);
@@ -495,10 +410,20 @@ impl Compiler {
         self.add_inst(IrOp::Return { value: obj_reg });
 
         let ctx = self.contexts.pop().expect("Empty contexts");
-        let fun = Value::Fun {
-            arity: 0,
-            body: Emitter {}.emit(ctx.ir_buff),
+
+        let fun_ir = if self.optimize {
+            IrOptimizer::optimize(ctx.ir_buff)
+        } else {
+            ctx.ir_buff
         };
+
+        let frame_size = IrOp::compute_frame_size(0, &fun_ir);
+        let code = Emitter {}.emit(fun_ir);
+        let fun = Value::Fun(Rc::new(Function {
+            arity: 0,
+            frame_size,
+            code: code.into(),
+        }));
         self.source = old_source;
         fun
     }
@@ -542,102 +467,6 @@ impl Compiler {
 
     fn add_inst(&mut self, i: IrOp) {
         self.current().ir_buff.push(i);
-    }
-
-    fn find_stds(&self, ast: Ast) -> Vec<String> {
-        match ast {
-            Ast::Value(val) => match val {
-                ParserValue::Ref(r) => {
-                    if self.std.functions.iter().find(|f| f.name == r).is_some() {
-                        vec![r]
-                    } else {
-                        vec![]
-                    }
-                }
-                ParserValue::EnumField { fields, .. } => {
-                    fields.into_iter().flat_map(|f| self.find_stds(f)).collect()
-                }
-                _ => vec![],
-            },
-            Ast::Declare { name: _, value } => self.find_stds(*value),
-            Ast::Object(entries) => entries
-                .iter()
-                .flat_map(|(k, v)| {
-                    let mut res = self.find_stds(k.clone());
-                    res.extend(self.find_stds(v.clone()));
-                    res
-                })
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::Raise { value } | Ast::Return { value } => self.find_stds(*value),
-            Ast::Call { what, args } => self
-                .find_stds(*what)
-                .into_iter()
-                .chain(args.iter().flat_map(|azt| self.find_stds(azt.clone())))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::Binary {
-                left,
-                right,
-                operator: _,
-            } => self
-                .find_stds(*left)
-                .into_iter()
-                .chain(self.find_stds(*right))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::If {
-                then_branch,
-                else_branch,
-                condition,
-            } => self
-                .find_stds(*condition)
-                .into_iter()
-                .chain(self.find_stds(*then_branch))
-                .chain(self.find_stds(*else_branch.unwrap_or(Box::new(Ast::Ignore))))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::For { condition, body } => self
-                .find_stds(*condition)
-                .into_iter()
-                .chain(self.find_stds(*body))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::ForEach {
-                iterable,
-                var_name: _,
-                body,
-            } => self
-                .find_stds(*iterable)
-                .into_iter()
-                .chain(self.find_stds(*body))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::Block { code } => code
-                .iter()
-                .flat_map(|azt| self.find_stds(azt.clone()))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect(),
-            Ast::Set { name: _, value } => self.find_stds(*value),
-            Ast::Match { target, arms } => {
-                let mut res = self.find_stds(*target);
-                for arm in arms {
-                    res.extend(self.find_stds(*arm.body));
-                }
-                res.into_iter()
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .collect()
-            }
-            _ => vec![],
-        }
     }
 
     fn compile(&mut self, ast: Ast) -> u8 {
@@ -700,7 +529,7 @@ impl Compiler {
                                     idx: const_idx,
                                 });
                             }
-                            Value::Fun { arity: _, body: _ }
+                            Value::Fun(_)
                             | Value::Object(_)
                             | Value::String(_)
                             | Value::NativeFun(_)
@@ -796,7 +625,7 @@ impl Compiler {
                             idx: const_idx,
                         });
                     }
-                    Value::Fun { arity: _, body: _ }
+                    Value::Fun(_)
                     | Value::Object(_)
                     | Value::String(_)
                     | Value::NativeFun(_)
@@ -911,11 +740,6 @@ impl Compiler {
 
                 obj_reg
             }
-            Ast::Raise { value } => {
-                let reg = self.compile(*value);
-                self.add_inst(IrOp::Return { value: reg });
-                0
-            }
             Ast::Return { value } => {
                 if self.contexts.len() > 1
                     && let Ast::Call { what, args } = *value
@@ -1026,17 +850,6 @@ impl Compiler {
                 else_branch,
                 condition,
             } => {
-                let used_stds: Vec<_> = self
-                    .find_stds(*then_branch.clone())
-                    .into_iter()
-                    .chain(self.find_stds(*else_branch.clone().unwrap_or(Box::new(Ast::Ignore))))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .map(|s| Ast::Value(ParserValue::Ref(s)))
-                    .collect();
-
-                let _ = self.compile_all(used_stds);
-
                 let cond = self.compile(*condition);
                 let else_label = self.new_label();
                 let end_label = self.new_label();
@@ -1255,7 +1068,7 @@ impl Compiler {
                                     idx: hash_const,
                                 });
                             }
-                            Value::Fun { arity: _, body: _ }
+                            Value::Fun(_)
                             | Value::Object(_)
                             | Value::String(_)
                             | Value::NativeFun(_)
@@ -1589,11 +1402,19 @@ impl Compiler {
                 self.compile(*body);
 
                 let fun = self.contexts.pop().unwrap();
+                let fun_ir = if self.optimize {
+                    IrOptimizer::optimize(fun.ir_buff)
+                } else {
+                    fun.ir_buff
+                };
+                let frame_size = IrOp::compute_frame_size(arity, &fun_ir);
+                let code = Emitter {}.emit(fun_ir);
 
-                Value::Fun {
+                Value::Fun(Rc::new(Function {
                     arity,
-                    body: Emitter {}.emit(fun.ir_buff),
-                }
+                    frame_size,
+                    code: code.into(),
+                }))
             }
             ParserValue::Object(entries) => {
                 self.contexts.push(Context::new());
