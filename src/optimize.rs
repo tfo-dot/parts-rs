@@ -475,12 +475,15 @@ impl IrOptimizer {
 
         loop {
             let start_len = current_ir.len();
+
             current_ir = Self::peephole_pass(current_ir);
             current_ir = Self::copy_propagation_pass(current_ir);
             current_ir = Self::inc_dec_pass(current_ir);
             current_ir = Self::state_and_dead_store_pass(current_ir);
             current_ir = Self::unreachable_code_pass(current_ir);
             current_ir = Self::jump_threading_pass(current_ir);
+
+            //TODO swap to bool check, like in AST
             if current_ir.len() == start_len {
                 break;
             }
@@ -641,6 +644,8 @@ impl IrOptimizer {
             if keep {
                 let writes_to = match op {
                     IrOp::LoadInt { dest, .. }
+                    | IrOp::LoadGlobal { dest, .. }
+                    | IrOp::LoadDouble { dest, .. }
                     | IrOp::LoadBool { dest, .. }
                     | IrOp::LoadConst { dest, .. }
                     | IrOp::LoadObject { dest, .. }
@@ -851,6 +856,8 @@ impl IrOptimizer {
     fn writes_dest(op: &IrOp) -> Option<u8> {
         match op {
             IrOp::LoadInt { dest, .. }
+            | IrOp::LoadGlobal { dest, .. }
+            | IrOp::LoadDouble { dest, .. }
             | IrOp::LoadBool { dest, .. }
             | IrOp::LoadConst { dest, .. }
             | IrOp::LoadObject { dest, .. }
