@@ -592,6 +592,8 @@ pub enum BinaryOperator {
     BitXor,
     BitSHL,
     BitSHR,
+    LogicalAnd,
+    LogicalOr,
 }
 
 #[derive(Debug, Clone)]

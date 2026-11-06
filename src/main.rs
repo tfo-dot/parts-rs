@@ -8,6 +8,7 @@ use parts::{
     value::Value,
     vm::VM,
 };
+use std::rc::Rc;
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -117,14 +118,21 @@ fn main() {
     let start_time_e = Instant::now();
 
     let mut vm = VM::new(res.code, res.consts);
+    vm.source_map = Some(Rc::new(res.source_map));
 
     let run_res = match vm.run() {
         Ok(val) => val,
         Err(e) => {
             let ip = vm.frames.last().map(|f| f.ip).unwrap_or(0);
-            let diag = e
-                .to_diagnostic(Some(&raw_path_str))
-                .with_note(format!("at instruction pointer {:04}", ip));
+            let loc = vm.lookup_source_location(ip);
+            let mut diag = e.to_diagnostic(Some(&raw_path_str));
+            if let Some((line, col)) = loc {
+                diag = diag.with_location(line, col);
+            }
+            diag = diag.with_note(format!("at instruction pointer {:04}", ip));
+            if vm.frames.len() > 1 {
+                diag = diag.with_note(vm.format_stack_trace());
+            }
             diag.eprint(None, Some(&raw_path_str));
             std::process::exit(1);
         }
@@ -265,6 +273,7 @@ fn get_code(config: Cli) -> CompilerOutput {
             .to_path_buf(),
     );
     c.optimize = config.optimize;
+    c.set_source_text(&content);
     let start_time_p = Instant::now();
 
     let mut ir = match c.compile_all(ast) {
@@ -303,7 +312,7 @@ fn get_code(config: Cli) -> CompilerOutput {
         println!();
     }
 
-    let bc = Emitter {}.emit(ir);
+    let (bc, source_map) = Emitter::emit_with_source_map(ir);
 
     if config.debug {
         println!("Bytecode: {:?}\n", bc);
@@ -324,6 +333,7 @@ fn get_code(config: Cli) -> CompilerOutput {
     CompilerOutput {
         code: bc,
         consts: c.constant_pool,
+        source_map,
     }
 }
 
@@ -391,6 +401,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
                 return CompilerOutput {
                     code: bytecode,
                     consts: Value::decode(encoded_c, false, 0).0,
+                    source_map: vec![],
                 };
             }
         }
@@ -433,6 +444,7 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
             .to_path_buf(),
     );
     c.optimize = config.optimize;
+    c.set_source_text(&content);
     let mut ir = match c.compile_all(ast) {
         Ok(ir) => ir,
         Err(errors) => {
@@ -447,17 +459,19 @@ fn get_bytecode(config: Cli) -> CompilerOutput {
         ir = IrOptimizer::optimize(ir);
     }
 
-    let bc = Emitter {}.emit(ir);
+    let (bc, source_map) = Emitter::emit_with_source_map(ir);
     save_cache(&cache_path, &bc, c.constant_pool.clone(), current_hash);
     CompilerOutput {
         code: bc,
         consts: c.constant_pool,
+        source_map,
     }
 }
 
 struct CompilerOutput {
     code: Vec<u8>,
     consts: Vec<Value>,
+    source_map: Vec<(usize, usize, usize)>,
 }
 
 fn save_cache(path: &Path, raw_bc: &[u8], constant_pool: Vec<Value>, hash: u64) {

@@ -6,5 +6,7 @@ return |>
     unix_connect: __net_unix_connect,
     read: __net_read,
     write: __net_write,
-    close: __net_close
+    close: __net_close,
+    set_timeout: __net_set_timeout,
+    set_nonblocking: __net_set_nonblocking
 <|;

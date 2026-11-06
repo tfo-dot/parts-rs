@@ -104,6 +104,8 @@ impl ScannerRule {
                     ("=", "EQUALS"),
                     ("&", "BIT_AND"),
                     ("|", "BIT_OR"),
+                    ("&&", "LOGICAL_AND"),
+                    ("||", "LOGICAL_OR"),
                     ("|>", "OBJ_START"),
                     ("<|", "OBJ_END"),
                     ("==", "EQUALITY"),

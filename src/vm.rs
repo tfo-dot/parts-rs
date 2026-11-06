@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Frame {
     pub pointer: usize,
     pub ip: usize,
@@ -52,7 +52,7 @@ impl Error {
         diag
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VM {
     pub stack: Vec<Value>,
     pub frames: Vec<Frame>,
@@ -61,6 +61,7 @@ pub struct VM {
     pub patch_table: FxHashMap<u64, FxHashMap<u64, Value>>,
     pub native_functions: Vec<NativeFunction>,
     pub native_map: FxHashMap<u64, NativeFunction>,
+    pub source_map: Option<Rc<Vec<(usize, usize, usize)>>>,
 }
 
 impl VM {
@@ -89,6 +90,7 @@ impl VM {
                 })
                 .collect(),
             native_functions: StdModule::get_core().functions,
+            source_map: None,
         }
     }
 
@@ -103,7 +105,145 @@ impl VM {
             vm.native_map.insert(hash, f.clone());
             vm.native_functions.push(f);
         }
+        vm.source_map = None;
         vm
+    }
+
+    pub fn with_globals(code: Vec<u8>, constants: Vec<Value>, globals: Vec<Value>) -> Self {
+        let mut stack = Vec::with_capacity(8192);
+        stack.extend(globals);
+        if stack.len() < 256 {
+            stack.resize(256, Value::Int(0));
+        }
+
+        Self {
+            frames: vec![Frame {
+                pointer: 0,
+                ip: 0,
+                bytecode: code.into(),
+                return_reg: 0,
+            }],
+            stack,
+            constants,
+            exit_value: None,
+            patch_table: FxHashMap::default(),
+            native_map: StdModule::get_core()
+                .functions
+                .into_iter()
+                .map(|f| {
+                    let hash = Value::String(f.name.to_string().into()).get_hash();
+                    (hash, f)
+                })
+                .collect(),
+            native_functions: StdModule::get_core().functions,
+            source_map: None,
+        }
+    }
+    pub fn lookup_source_location(&self, ip: usize) -> Option<(usize, usize)> {
+        if let Some(ref map) = self.source_map {
+            let idx = map.partition_point(|&(offset, _, _)| offset <= ip);
+            if idx > 0 {
+                let (_, line, col) = map[idx - 1];
+                Some((line, col))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn format_stack_trace(&self) -> String {
+        let mut out = String::new();
+        out.push_str("Stack trace:\n");
+        for (idx, frame) in self.frames.iter().enumerate().rev() {
+            let loc = self.lookup_source_location(frame.ip);
+            if let Some((line, col)) = loc {
+                out.push_str(&format!(
+                    "  [{}] line {}, col {} (IP: {:04})\n",
+                    idx, line, col, frame.ip
+                ));
+            } else {
+                out.push_str(&format!("  [{}] IP: {:04}\n", idx, frame.ip));
+            }
+        }
+        out
+    }
+
+    pub fn call_function(
+        &mut self,
+        fun: &crate::value::Function,
+        args: Vec<Value>,
+    ) -> Result<Option<Value>, Error> {
+        if args.len() != fun.arity as usize {
+            return Err(Error::UnexpectedTypeCall);
+        }
+
+        let fp = self.stack.len();
+        let frame_size = fun.frame_size as usize;
+        self.stack.resize(fp + frame_size, Value::Int(0));
+
+        for (i, arg) in args.into_iter().enumerate() {
+            self.stack[fp + i] = arg;
+        }
+
+        self.frames.push(Frame {
+            pointer: fp,
+            ip: 0,
+            bytecode: Rc::clone(&fun.code),
+            return_reg: 0,
+        });
+
+        let result = self.run();
+        self.stack.truncate(fp);
+        result
+    }
+
+    pub fn call_value(&mut self, val: &Value, args: Vec<Value>) -> Result<Option<Value>, Error> {
+        match val {
+            Value::Fun(fun) => self.call_function(fun, args),
+            Value::BoundMethod { receiver, method } => {
+                if args.len() + 1 != method.arity as usize {
+                    return Err(Error::UnexpectedTypeCall);
+                }
+                let mut all_args = Vec::with_capacity(args.len() + 1);
+                all_args.push((**receiver).clone());
+                all_args.extend(args);
+                (method.call)(&all_args)
+                    .map(Some)
+                    .map_err(Error::NativeFunctionFailed)
+            }
+            Value::NativeFun(native) => {
+                if args.len() != native.arity as usize {
+                    return Err(Error::UnexpectedTypeCall);
+                }
+                (native.call)(&args)
+                    .map(Some)
+                    .map_err(Error::NativeFunctionFailed)
+            }
+            _ => Err(Error::UnexpectedTypeCall),
+        }
+    }
+
+    pub fn call_method(
+        &mut self,
+        obj: &Value,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Option<Value>, Error> {
+        if let Value::Object(obj_ref) = obj {
+            let map = obj_ref.borrow();
+            let hash = Value::String(method.to_string().into()).get_hash();
+            if let Some(func_val) = map.get(&hash) {
+                let func_clone = func_val.clone();
+                drop(map);
+                self.call_value(&func_clone, args)
+            } else {
+                Err(Error::PropertyNotFound(hash))
+            }
+        } else {
+            Err(Error::UnexpectedType)
+        }
     }
 
     pub fn run_with_frame(&mut self, frame: Frame) -> Result<Option<Value>, Error> {
@@ -290,9 +430,37 @@ impl VM {
                                 (native_fn.call)(&args)
                             }
                             .map_err(|e| {
+                                let loc_info = match self.lookup_source_location(ip) {
+                                    Some((l, c)) => format!("at line {}:{} (IP: {})", l, c, ip),
+                                    None => format!("IP: {}", ip),
+                                };
                                 Error::NativeFunctionFailed(format!(
-                                    "Error in native function '{}': {}, IP: {}",
-                                    native_fn.name, e, ip
+                                    "Error in native function '{}': {}, {}",
+                                    native_fn.name, e, loc_info
+                                ))
+                            })?;
+
+                            self.stack[fp + dest_reg as usize] = result;
+                        }
+                        Value::BoundMethod { receiver, method } => {
+                            let receiver = (**receiver).clone();
+                            let native_fn = method.clone();
+                            let mut args = Vec::with_capacity(arg_count as usize + 1);
+                            args.push(receiver);
+                            for _ in 0..arg_count {
+                                let arg_reg = code[ip] as usize;
+                                ip += 1;
+                                args.push(self.stack[fp + arg_reg].clone());
+                            }
+                            self.frames[frame_idx].ip = ip;
+                            let result = (native_fn.call)(&args).map_err(|e| {
+                                let loc_info = match self.lookup_source_location(ip) {
+                                    Some((l, c)) => format!("at line {}:{} (IP: {})", l, c, ip),
+                                    None => format!("IP: {}", ip),
+                                };
+                                Error::NativeFunctionFailed(format!(
+                                    "Error in native function '{}': {}, {}",
+                                    native_fn.name, e, loc_info
                                 ))
                             })?;
 
@@ -368,9 +536,50 @@ impl VM {
                                 (native_fn.call)(&args)
                             }
                             .map_err(|e| {
+                                let loc_info = match self.lookup_source_location(ip) {
+                                    Some((l, c)) => format!("at line {}:{} (IP: {})", l, c, ip),
+                                    None => format!("IP: {}", ip),
+                                };
                                 Error::NativeFunctionFailed(format!(
-                                    "Error in native function '{}': {}, IP: {}",
-                                    native_fn.name, e, ip
+                                    "Error in native function '{}': {}, {}",
+                                    native_fn.name, e, loc_info
+                                ))
+                            })?;
+
+                            if self.frames.len() <= 1 {
+                                self.exit_value = Some(result);
+                                self.frames.pop();
+                                break;
+                            }
+
+                            let frame = self.frames.pop().unwrap();
+                            self.stack.truncate(frame.pointer);
+
+                            frame_idx = self.frames.len() - 1;
+                            fp = self.frames[frame_idx].pointer;
+                            ip = self.frames[frame_idx].ip;
+                            code = Rc::clone(&self.frames[frame_idx].bytecode);
+
+                            self.stack[fp + frame.return_reg as usize] = result;
+                        }
+                        Value::BoundMethod { receiver, method } => {
+                            let receiver = (**receiver).clone();
+                            let native_fn = method.clone();
+                            let mut args = Vec::with_capacity(arg_count + 1);
+                            args.push(receiver);
+                            for _ in 0..arg_count {
+                                let arg_reg = code[ip] as usize;
+                                ip += 1;
+                                args.push(self.stack[fp + arg_reg].clone());
+                            }
+                            let result = (native_fn.call)(&args).map_err(|e| {
+                                let loc_info = match self.lookup_source_location(ip) {
+                                    Some((l, c)) => format!("at line {}:{} (IP: {})", l, c, ip),
+                                    None => format!("IP: {}", ip),
+                                };
+                                Error::NativeFunctionFailed(format!(
+                                    "Error in native function '{}': {}, {}",
+                                    native_fn.name, e, loc_info
                                 ))
                             })?;
 
@@ -436,11 +645,27 @@ impl VM {
                         Value::EnumField { args, .. } => {
                             if let Some((_, val)) = args.iter().find(|(h, _)| *h == hash) {
                                 Some(val.clone())
+                            } else if let Some(native_fn) = self.native_map.get(&hash) {
+                                let receiver = self.stack[fp + src_idx].clone();
+                                Some(Value::BoundMethod {
+                                    receiver: Box::new(receiver),
+                                    method: native_fn.clone(),
+                                })
                             } else {
                                 return Err(Error::PropertyNotFound(hash));
                             }
                         }
-                        _ => return Err(Error::UnexpectedType),
+                        _ => {
+                            if let Some(native_fn) = self.native_map.get(&hash) {
+                                let receiver = self.stack[fp + src_idx].clone();
+                                Some(Value::BoundMethod {
+                                    receiver: Box::new(receiver),
+                                    method: native_fn.clone(),
+                                })
+                            } else {
+                                return Err(Error::PropertyNotFound(hash));
+                            }
+                        }
                     };
 
                     if let Some(v) = val {
@@ -522,6 +747,12 @@ impl VM {
                         Value::EnumField { args, .. } => {
                             if let Some((_, val)) = args.iter().find(|(h, _)| *h == runtime_hash) {
                                 val.clone()
+                            } else if let Some(native_fn) = self.native_map.get(&runtime_hash) {
+                                let receiver = self.stack[fp + obj_reg].clone();
+                                Value::BoundMethod {
+                                    receiver: Box::new(receiver),
+                                    method: native_fn.clone(),
+                                }
                             } else {
                                 return Err(Error::PropertyNotFound(runtime_hash));
                             }
@@ -541,7 +772,17 @@ impl VM {
                             }
                             Value::Int(b[index as usize] as i64)
                         }
-                        _ => panic!("Runtime Error: Attempted to get property from non-object"),
+                        _ => {
+                            if let Some(native_fn) = self.native_map.get(&runtime_hash) {
+                                let receiver = self.stack[fp + obj_reg].clone();
+                                Value::BoundMethod {
+                                    receiver: Box::new(receiver),
+                                    method: native_fn.clone(),
+                                }
+                            } else {
+                                return Err(Error::UnexpectedType);
+                            }
+                        }
                     };
 
                     self.stack[fp + target_reg] = val;
@@ -578,6 +819,14 @@ impl VM {
 
                     let global_val = self.stack[global_reg].clone();
                     self.stack[fp + dest] = global_val;
+                }
+                0x28 => {
+                    // StoreGlobal
+                    let src = code[ip] as usize;
+                    let global_reg = code[ip + 1] as usize;
+                    ip += 2;
+
+                    self.stack[global_reg] = self.stack[fp + src].clone();
                 }
                 0x18 => {
                     // Inc
@@ -645,6 +894,7 @@ impl VM {
             Value::Object(items) => !items.borrow().is_empty(),
             Value::EnumDefinition(_) | Value::EnumField { .. } => true,
             Value::Bytes(bytes) => !bytes.borrow().is_empty(),
+            Value::BoundMethod { .. } => true,
         }
     }
 
@@ -684,6 +934,26 @@ impl VM {
                 13 => Value::Int(a << b),
                 14 => Value::Int(a >> b),
                 _ => panic!("UnexpectedType bin"),
+            };
+            stack[dest] = res;
+        } else if let (Value::Double(a), Value::Double(b)) = (&stack[left_idx], &stack[right_idx]) {
+            let a = *a;
+            let b = *b;
+            let res = match op_type {
+                0 => Value::Double(a + b),
+                1 => Value::Double(a - b),
+                2 => Value::Double(a * b),
+                3 => Value::Double(a / b),
+                4 => Value::Bool(a == b),
+                5 => Value::Bool(a > b),
+                6 => Value::Bool(a < b),
+                7 => Value::Bool(a >= b),
+                8 => Value::Bool(a <= b),
+                _ => {
+                    let left = stack[left_idx].clone();
+                    let right = stack[right_idx].clone();
+                    Self::binary(op_type as usize, left, right)
+                }
             };
             stack[dest] = res;
         } else {

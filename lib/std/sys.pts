@@ -3,5 +3,6 @@
 return |>
     exec: __exec,
     env: __env,
-    time: __timestamp
+    time: __timestamp,
+    sleep: __sleep
 <|;

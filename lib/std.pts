@@ -29,5 +29,8 @@ return |>
     unix_connect: __net_unix_connect,
     net_read: __net_read,
     net_write: __net_write,
-    net_close: __net_close
+    net_close: __net_close,
+    net_set_timeout: __net_set_timeout,
+    net_set_nonblocking: __net_set_nonblocking,
+    sleep: __sleep
 <|;

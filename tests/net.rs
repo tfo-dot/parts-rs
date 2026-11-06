@@ -330,4 +330,88 @@ mod tests {
         let result = engine.execute(source).unwrap();
         assert_eq!(result, Some(Value::Int(1)));
     }
+
+    #[test]
+    fn test_socket_ufcs_methods() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).unwrap();
+            stream.write_all(&buf[..n]).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let engine = Engine::new();
+        let source = format!(
+            r#"
+            let std = import `@std/std.pts`;
+            let net = std.net;
+            let sock = net.tcp_connect("127.0.0.1:{}").unwrap();
+
+            let msg = "UFCS socket test";
+            sock.write(msg).unwrap();
+            let resp = sock.read(1024).unwrap().to_string().unwrap();
+            sock.close().unwrap();
+
+            if resp == msg {{
+                return 1;
+            }} else {{
+                return 0;
+            }}
+            "#,
+            port
+        );
+
+        let result = engine.execute(&source).unwrap();
+        assert_eq!(result, Some(Value::Int(1)));
+
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_socket_timeout_and_nonblocking() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // Sleep before writing so client nonblocking/timeout can be tested
+            thread::sleep(std::time::Duration::from_millis(100));
+            let mut buf = [0u8; 64];
+            let _ = stream.read(&mut buf);
+        });
+
+        let engine = Engine::new();
+        let source = format!(
+            r#"
+            let std = import `@std/std.pts`;
+            let net = std.net;
+            let sock = net.tcp_connect("127.0.0.1:{}").unwrap();
+
+            sock.set_nonblocking(true).unwrap();
+            let read_res = sock.read(1024);
+            let is_would_block = read_res.is_err();
+
+            sock.set_nonblocking(false).unwrap();
+            sock.set_timeout(50).unwrap();
+
+            sock.close().unwrap();
+
+            if is_would_block {{
+                return 1;
+            }} else {{
+                return 0;
+            }}
+            "#,
+            port
+        );
+
+        let result = engine.execute(&source).unwrap();
+        assert_eq!(result, Some(Value::Int(1)));
+
+        server_thread.join().unwrap();
+    }
 }

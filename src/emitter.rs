@@ -33,7 +33,8 @@ define_opcodes! {
     SetPropertyDyn = 0x24,
     LoadNative     = 0x25,
     LoadGlobal     = 0x26,
-    MatchEnum      = 0x27
+    MatchEnum      = 0x27,
+    StoreGlobal    = 0x28
 }
 
 impl Emitter {
@@ -52,6 +53,8 @@ impl Emitter {
             IrOp::LoadReg { .. } => 3,
             IrOp::LoadNative { .. } => 4,
             IrOp::LoadGlobal { .. } => 3,
+            IrOp::StoreGlobal { .. } => 3,
+            IrOp::SourceLocation { .. } => 0,
             IrOp::LoadFun { .. } => 4,
             IrOp::LoadObject { .. } => 4,
             IrOp::GetProperty { .. } => 5,
@@ -72,7 +75,13 @@ impl Emitter {
         }
     }
 
-    pub fn emit(&mut self, ir: Vec<IrOp>) -> Vec<u8> {
+    pub fn emit(&self, ir: Vec<IrOp>) -> Vec<u8> {
+        let (bc, _) = Self::emit_with_source_map(ir);
+        bc
+    }
+
+    pub fn emit_with_source_map(ir: Vec<IrOp>) -> (Vec<u8>, Vec<(usize, usize, usize)>) {
+        let mut source_map = Vec::new();
         let mut current_byte_offset = 0;
         let mut label_offsets = FxHashMap::default();
 
@@ -129,6 +138,14 @@ impl Emitter {
                     buff.push(OpCode::LoadGlobal as u8);
                     buff.push(dest);
                     buff.push(src);
+                }
+                IrOp::StoreGlobal { src, dest } => {
+                    buff.push(OpCode::StoreGlobal as u8);
+                    buff.push(src);
+                    buff.push(dest);
+                }
+                IrOp::SourceLocation { line, col } => {
+                    source_map.push((current_byte_offset, line, col));
                 }
                 IrOp::LoadFun { dest, src } => {
                     buff.push(OpCode::LoadFun as u8);
@@ -207,6 +224,10 @@ impl Emitter {
                         crate::parser::BinaryOperator::BitXor => 12,
                         crate::parser::BinaryOperator::BitSHL => 13,
                         crate::parser::BinaryOperator::BitSHR => 14,
+                        crate::parser::BinaryOperator::LogicalAnd
+                        | crate::parser::BinaryOperator::LogicalOr => {
+                            unreachable!("Logical operators are compiled to control flow")
+                        }
                     };
 
                     buff.push(op_code);
@@ -269,7 +290,7 @@ impl Emitter {
             }
         }
 
-        buff
+        (buff, source_map)
     }
 }
 
@@ -290,6 +311,14 @@ pub enum IrOp {
     LoadGlobal {
         dest: u8,
         src: u8,
+    },
+    StoreGlobal {
+        src: u8,
+        dest: u8,
+    },
+    SourceLocation {
+        line: usize,
+        col: usize,
     },
     LoadFun {
         dest: u8,
@@ -394,6 +423,10 @@ impl IrOp {
                 f(*dest);
                 f(*src);
             }
+            IrOp::StoreGlobal { src, .. } => {
+                f(*src);
+            }
+            IrOp::SourceLocation { .. } => {}
 
             IrOp::GetProperty { dest, obj, .. } => {
                 f(*dest);
@@ -488,6 +521,7 @@ impl IrOp {
             }
             IrOp::LoadReg { src, .. }
             | IrOp::LoadGlobal { src, .. }
+            | IrOp::StoreGlobal { src, .. }
             | IrOp::MatchEnum { src, .. } => {
                 f(*src);
             }
@@ -535,6 +569,7 @@ impl IrOp {
                 | IrOp::Return { .. }
                 | IrOp::Jump { .. }
                 | IrOp::JumpNot { .. }
+                | IrOp::StoreGlobal { .. }
                 | IrOp::Label(_)
         )
     }

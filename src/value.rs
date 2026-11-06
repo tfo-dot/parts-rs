@@ -42,6 +42,10 @@ pub enum Value {
         args: Rc<[(u64, Value)]>,
     },
     Bytes(Rc<RefCell<Vec<u8>>>),
+    BoundMethod {
+        receiver: Box<Value>,
+        method: NativeFunction,
+    },
 }
 
 use std::hash::{Hash, Hasher};
@@ -109,6 +113,11 @@ impl Hash for Value {
                 state.write_u8(8);
                 let ptr = Rc::as_ptr(bytes) as usize;
                 ptr.hash(state);
+            }
+            Value::BoundMethod { receiver, method } => {
+                state.write_u8(11);
+                receiver.hash(state);
+                method.name.hash(state);
             }
         }
     }
@@ -222,6 +231,33 @@ impl Value {
     }
 
     pub fn call(&self, args: Vec<Value>, constants: Vec<Value>) -> Result<Option<Value>, String> {
+        self.call_with_globals(args, constants, vec![])
+    }
+
+    pub fn call_with_vm(
+        &self,
+        vm: &mut crate::vm::VM,
+        args: Vec<Value>,
+    ) -> Result<Option<Value>, String> {
+        vm.call_value(self, args)
+            .map_err(|e| format!("VM Error: {:?}", e))
+    }
+
+    pub fn call_with_globals(
+        &self,
+        args: Vec<Value>,
+        constants: Vec<Value>,
+        mut globals: Vec<Value>,
+    ) -> Result<Option<Value>, String> {
+        self.call_with_globals_mut(args, constants, &mut globals)
+    }
+
+    pub fn call_with_globals_mut(
+        &self,
+        args: Vec<Value>,
+        constants: Vec<Value>,
+        globals: &mut [Value],
+    ) -> Result<Option<Value>, String> {
         match self {
             Value::Fun(fun) => {
                 if args.len() != fun.arity as usize {
@@ -234,19 +270,41 @@ impl Value {
 
                 use crate::vm::{Frame, VM};
 
-                let mut vm = VM::new(vec![], constants);
+                let mut vm = VM::with_globals(vec![], constants, globals.to_vec());
+                let fp = vm.stack.len();
+                let frame_size = fun.frame_size as usize;
+                vm.stack.resize(fp + frame_size, Value::Int(0));
 
                 for (i, arg) in args.into_iter().enumerate() {
-                    vm.stack[i] = arg;
+                    vm.stack[fp + i] = arg;
                 }
 
-                vm.run_with_frame(Frame {
-                    pointer: 0,
-                    ip: 0,
-                    bytecode: Rc::clone(&fun.code),
-                    return_reg: 0,
-                })
-                .map_err(|e| format!("VM Error: {:?}", e))
+                let res = vm
+                    .run_with_frame(Frame {
+                        pointer: fp,
+                        ip: 0,
+                        bytecode: Rc::clone(&fun.code),
+                        return_reg: 0,
+                    })
+                    .map_err(|e| format!("VM Error: {:?}", e))?;
+
+                let limit = globals.len();
+                globals[..limit].clone_from_slice(&vm.stack[..limit]);
+
+                Ok(res)
+            }
+            Value::BoundMethod { receiver, method } => {
+                if args.len() + 1 != method.arity as usize {
+                    return Err(format!(
+                        "Expected {} arguments, got {}",
+                        method.arity,
+                        args.len() + 1
+                    ));
+                }
+                let mut all_args = Vec::with_capacity(args.len() + 1);
+                all_args.push((**receiver).clone());
+                all_args.extend(args);
+                (method.call)(&all_args).map(Some)
             }
             Value::NativeFun(native) => {
                 if args.len() != native.arity as usize {
@@ -435,7 +493,7 @@ impl Value {
 
                     let mut obj: FxHashMap<u64, Value> = FxHashMap::default();
 
-                    for chunk in entries.chunks_exact(2) {
+                    for chunk in entries.as_chunks::<2>().0 {
                         let key_raw = match chunk[0] {
                             Value::Hash(h) => h,
                             _ => unreachable!(),
@@ -576,6 +634,7 @@ impl Display for Value {
             Value::Ref(r) => write!(f, "&{}", r),   // Prefixed with & to show it's a ref
             Value::Fun(fun) => write!(f, "<function/{}>", fun.arity),
             Value::NativeFun(_) => write!(f, "<native fun>"),
+            Value::BoundMethod { method, .. } => write!(f, "<bound method {}>", method.name),
             Value::Object(obj) => write!(f, "<object: {} keys>", obj.borrow().len()),
             Value::Hash(h) => write!(f, "#{}", h),
             Value::EnumDefinition(idx) => write!(f, "<enum def #{}>", idx),
@@ -623,7 +682,32 @@ impl Display for Value {
     }
 }
 
-impl_binary_op!(Add, add, +);
+impl std::ops::Add for Value {
+    type Output = Result<Value, String>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Value::Ref(_), _) | (_, Value::Ref(_)) => {
+                Err("got reference, expected value".to_string())
+            }
+
+            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b).into())),
+            (Value::String(a), b) => Ok(Value::String(format!("{}{}", a, b).into())),
+            (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a, b).into())),
+
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (Value::Double(a), Value::Double(b)) => Ok(Value::Double(a + b)),
+
+            (Value::Int(a), Value::Double(b)) => Ok(Value::Double(a as f64 + b)),
+            (Value::Double(a), Value::Int(b)) => Ok(Value::Double(a + b as f64)),
+
+            (Value::Int(a), Value::Bool(b)) => Ok(Value::Int(a + (if b { 1 } else { 0 }))),
+            (Value::Bool(a), Value::Int(b)) => Ok(Value::Int((if a { 1 } else { 0 }) + b)),
+
+            (l, r) => Err(format!("Operation not supported: {:?} + {:?}", l, r)),
+        }
+    }
+}
 impl_binary_op!(Sub, sub, -);
 impl_binary_op!(Mul, mul, *);
 impl_binary_op!(Div, div, /);

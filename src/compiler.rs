@@ -1,5 +1,5 @@
 use crate::emitter::Emitter;
-use crate::emitter::IrOp;
+pub use crate::emitter::IrOp;
 use crate::optimize::IrOptimizer;
 use crate::parser::BinaryOperator;
 use crate::parser::EnumVariant;
@@ -157,6 +157,10 @@ pub struct Compiler {
     source: PathBuf,
     next_label_id: usize,
     pub optimize: bool,
+    pub source_lines: Option<Vec<String>>,
+    pub current_line: usize,
+    pub current_col: usize,
+    pub module_variables: rustc_hash::FxHashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +183,10 @@ impl Compiler {
             source,
             enums: vec![],
             optimize: false,
+            source_lines: None,
+            current_line: 0,
+            current_col: 0,
+            module_variables: rustc_hash::FxHashSet::default(),
         };
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
@@ -218,8 +226,41 @@ impl Compiler {
         compiler.std.functions.extend(natives);
         compiler
     }
+    pub fn set_source_text(&mut self, text: &str) {
+        self.source_lines = Some(text.lines().map(|s| s.to_string()).collect());
+        self.current_line = 0;
+        self.current_col = 0;
+    }
 
-    pub fn error(&mut self, line: usize, column: usize, message: impl Into<String>) {
+    fn locate(&mut self, pattern: &str) {
+        if let Some(ref lines) = self.source_lines {
+            for (line_idx, line) in lines.iter().enumerate().skip(self.current_line) {
+                let search_col = if line_idx == self.current_line {
+                    self.current_col
+                } else {
+                    0
+                };
+                if search_col <= line.len()
+                    && let Some(rel_col) = line[search_col..].find(pattern)
+                {
+                    let col_idx = search_col + rel_col;
+                    self.current_line = line_idx;
+                    self.current_col = col_idx + pattern.len();
+                    self.add_inst(IrOp::SourceLocation {
+                        line: line_idx + 1,
+                        col: col_idx + 1,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn error(&mut self, mut line: usize, mut column: usize, message: impl Into<String>) {
+        if line == 0 && self.current_line > 0 {
+            line = self.current_line + 1;
+            column = self.current_col + 1;
+        }
         self.errors.push(Error {
             line,
             column,
@@ -246,6 +287,14 @@ impl Compiler {
 
     fn next_free_address(&mut self) -> u8 {
         let address = self.current().next_free_register;
+        if self.current().next_free_register == u8::MAX {
+            self.error(
+                0,
+                0,
+                "register overflow: exceeded maximum of 255 registers in frame",
+            );
+            return 255;
+        }
         self.current().next_free_register += 1;
         address
     }
@@ -472,6 +521,10 @@ impl Compiler {
     fn compile(&mut self, ast: Ast) -> u8 {
         match ast {
             Ast::Declare { name, value } => {
+                self.locate(&name);
+                if matches!(&*value, Ast::Import { .. }) || matches!(&*value, Ast::Dot { .. }) {
+                    self.module_variables.insert(name.clone());
+                }
                 let address = self
                     .current()
                     .resolve_local(&name)
@@ -536,6 +589,7 @@ impl Compiler {
                             | Value::Hash(_)
                             | Value::EnumDefinition(_)
                             | Value::EnumField { .. }
+                            | Value::BoundMethod { .. }
                             | Value::Bytes(_) => {
                                 let idx = self.get_or_add_constant(v);
                                 self.add_inst(IrOp::LoadConst { dest: address, idx });
@@ -632,6 +686,7 @@ impl Compiler {
                     | Value::Hash(_)
                     | Value::EnumDefinition(_)
                     | Value::EnumField { .. }
+                    | Value::BoundMethod { .. }
                     | Value::Bytes(_) => {
                         let idx = self.get_or_add_constant(v);
                         self.add_inst(IrOp::LoadConst { dest: reg, idx });
@@ -741,6 +796,7 @@ impl Compiler {
                 obj_reg
             }
             Ast::Return { value } => {
+                self.locate("return");
                 if self.contexts.len() > 1
                     && let Ast::Call { what, args } = *value
                 {
@@ -750,7 +806,16 @@ impl Compiler {
                         resolve: _,
                     } = *what.clone()
                     {
-                        let is_ufcs = if let Ast::Value(ParserValue::Ref(ref name)) = *access {
+                        let is_module_accessor = match &*accessor {
+                            Ast::Dot { .. } => true,
+                            Ast::Value(ParserValue::Ref(name)) => {
+                                self.module_variables.contains(name)
+                            }
+                            _ => false,
+                        };
+                        let is_ufcs = if is_module_accessor {
+                            false
+                        } else if let Ast::Value(ParserValue::Ref(ref name)) = *access {
                             self.current().resolve_local(name).is_some()
                                 || self.std.functions.iter().any(|f| f.name == name)
                         } else {
@@ -785,13 +850,23 @@ impl Compiler {
                 0
             }
             Ast::Call { what, args } => {
+                if let Ast::Value(ParserValue::Ref(ref fn_name)) = *what {
+                    self.locate(fn_name);
+                }
                 let (caller, final_args) = if let Ast::Dot {
                     accessor,
                     access,
                     resolve: _,
                 } = *what.clone()
                 {
-                    let is_ufcs = if let Ast::Value(ParserValue::Ref(ref name)) = *access {
+                    let is_module_accessor = match &*accessor {
+                        Ast::Dot { .. } => true,
+                        Ast::Value(ParserValue::Ref(name)) => self.module_variables.contains(name),
+                        _ => false,
+                    };
+                    let is_ufcs = if is_module_accessor {
+                        false
+                    } else if let Ast::Value(ParserValue::Ref(ref name)) = *access {
                         self.current().resolve_local(name).is_some()
                             || self.std.functions.iter().any(|f| f.name == name)
                     } else {
@@ -829,27 +904,73 @@ impl Compiler {
                 left,
                 right,
                 operator,
-            } => {
-                let compiled_left = self.compile(*left);
-                let compiled_right = self.compile(*right);
+            } => match operator {
+                BinaryOperator::LogicalAnd => {
+                    let result_reg = self.next_free_address();
+                    let left_reg = self.compile(*left);
+                    self.add_inst(IrOp::LoadReg {
+                        dest: result_reg,
+                        src: left_reg,
+                    });
+                    let end_label = self.new_label();
+                    self.add_inst(IrOp::JumpNot {
+                        condition: result_reg,
+                        target: end_label,
+                    });
+                    let right_reg = self.compile(*right);
+                    self.add_inst(IrOp::LoadReg {
+                        dest: result_reg,
+                        src: right_reg,
+                    });
+                    self.add_inst(IrOp::Label(end_label));
+                    result_reg
+                }
+                BinaryOperator::LogicalOr => {
+                    let result_reg = self.next_free_address();
+                    let left_reg = self.compile(*left);
+                    self.add_inst(IrOp::LoadReg {
+                        dest: result_reg,
+                        src: left_reg,
+                    });
+                    let eval_right_label = self.new_label();
+                    let end_label = self.new_label();
+                    self.add_inst(IrOp::JumpNot {
+                        condition: result_reg,
+                        target: eval_right_label,
+                    });
+                    self.add_inst(IrOp::Jump { target: end_label });
+                    self.add_inst(IrOp::Label(eval_right_label));
+                    let right_reg = self.compile(*right);
+                    self.add_inst(IrOp::LoadReg {
+                        dest: result_reg,
+                        src: right_reg,
+                    });
+                    self.add_inst(IrOp::Label(end_label));
+                    result_reg
+                }
+                _ => {
+                    let compiled_left = self.compile(*left);
+                    let compiled_right = self.compile(*right);
 
-                let reg = self.next_free_address();
+                    let reg = self.next_free_address();
 
-                self.add_inst(IrOp::Binary {
-                    dest: reg,
-                    op: operator,
-                    left: compiled_left,
-                    right: compiled_right,
-                });
+                    self.add_inst(IrOp::Binary {
+                        dest: reg,
+                        op: operator,
+                        left: compiled_left,
+                        right: compiled_right,
+                    });
 
-                self.current().next_free_register = reg + 1;
-                reg
-            }
+                    self.current().next_free_register = reg + 1;
+                    reg
+                }
+            },
             Ast::If {
                 then_branch,
                 else_branch,
                 condition,
             } => {
+                self.locate("if");
                 let cond = self.compile(*condition);
                 let else_label = self.new_label();
                 let end_label = self.new_label();
@@ -878,16 +999,20 @@ impl Compiler {
             Ast::BreakCode => self.compile_break(),
             Ast::Ignore => 0,
             Ast::For { condition, body } => {
+                self.locate("for");
+                let loop_base = self.current().local_count;
                 let start_label = self.new_label();
                 let end_label = self.new_label();
 
                 self.add_inst(IrOp::Label(start_label));
 
+                self.current().next_free_register = loop_base;
                 let cond_reg = self.compile(*condition);
                 self.add_inst(IrOp::JumpNot {
                     target: end_label,
                     condition: cond_reg,
                 });
+                self.current().next_free_register = loop_base;
 
                 self.current().loop_stack.push(LoopContext {
                     start: start_label,
@@ -896,11 +1021,14 @@ impl Compiler {
 
                 self.compile(*body);
 
+                self.current().loop_stack.pop();
+
                 self.add_inst(IrOp::Jump {
                     target: start_label,
                 });
 
                 self.add_inst(IrOp::Label(end_label));
+                self.current().next_free_register = loop_base;
 
                 0
             }
@@ -1023,7 +1151,26 @@ impl Compiler {
 
             Ast::Set { name, value } => match *name {
                 Ast::Value(ParserValue::Ref(name)) => {
+                    self.locate("=");
                     let dest = self.current().resolve_local(&name);
+
+                    if dest.is_none() {
+                        let mut found_global = None;
+                        for ctx in self.contexts.iter().rev().skip(1) {
+                            if let Some(&global_reg) = ctx.top_level_names.get(name.as_str()) {
+                                found_global = Some(global_reg);
+                                break;
+                            }
+                        }
+                        if let Some(global_reg) = found_global {
+                            let res = self.compile(*value);
+                            self.add_inst(IrOp::StoreGlobal {
+                                src: res,
+                                dest: global_reg,
+                            });
+                            return res;
+                        }
+                    }
 
                     let lhs_reg = dest.unwrap_or_else(|| self.current().add_local(name));
 
@@ -1075,6 +1222,7 @@ impl Compiler {
                             | Value::Hash(_)
                             | Value::EnumDefinition(_)
                             | Value::EnumField { .. }
+                            | Value::BoundMethod { .. }
                             | Value::Bytes(_) => {
                                 let idx = self.get_or_add_constant(v);
                                 self.add_inst(IrOp::LoadConst { dest: lhs_reg, idx });

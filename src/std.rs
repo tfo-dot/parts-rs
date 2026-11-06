@@ -328,8 +328,7 @@ pub fn __env(name: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __joinStr(arg_one: Value, arg_two: Value) -> Result<Value, String> {
+fn raw_join_str(arg_one: Value, arg_two: Value) -> Result<Value, String> {
     let s1 = match arg_one {
         Value::String(s) => s,
         _ => return Err("Expected string lol".to_string()),
@@ -341,6 +340,16 @@ pub fn __joinStr(arg_one: Value, arg_two: Value) -> Result<Value, String> {
     };
 
     Ok(Value::String(format!("{}{}", s1, s2).into()))
+}
+
+#[native_function]
+pub fn __joinStr(arg_one: Value, arg_two: Value) -> Result<Value, String> {
+    raw_join_str(arg_one, arg_two)
+}
+
+#[native_function]
+pub fn join(arg_one: Value, arg_two: Value) -> Result<Value, String> {
+    raw_join_str(arg_one, arg_two)
 }
 
 #[native_function]
@@ -455,8 +464,7 @@ pub fn strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
     raw_str_strip_suffix(str, suffix)
 }
 
-#[native_function]
-pub fn __str_upper(val: Value) -> Result<Value, String> {
+fn raw_str_upper(val: Value) -> Result<Value, String> {
     match val {
         Value::String(s) => Ok(Value::String(s.to_uppercase().into())),
         _ => Err("Expected string".to_string()),
@@ -464,11 +472,30 @@ pub fn __str_upper(val: Value) -> Result<Value, String> {
 }
 
 #[native_function]
-pub fn __str_lower(val: Value) -> Result<Value, String> {
+pub fn __str_upper(val: Value) -> Result<Value, String> {
+    raw_str_upper(val)
+}
+
+#[native_function]
+pub fn upper(val: Value) -> Result<Value, String> {
+    raw_str_upper(val)
+}
+
+fn raw_str_lower(val: Value) -> Result<Value, String> {
     match val {
         Value::String(s) => Ok(Value::String(s.to_lowercase().into())),
         _ => Err("Expected string".to_string()),
     }
+}
+
+#[native_function]
+pub fn __str_lower(val: Value) -> Result<Value, String> {
+    raw_str_lower(val)
+}
+
+#[native_function]
+pub fn lower(val: Value) -> Result<Value, String> {
+    raw_str_lower(val)
 }
 
 #[native_function]
@@ -500,11 +527,19 @@ pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Valu
 }
 
 fn raw_object_len(obj: Value) -> Result<Value, String> {
-    if let Value::Object(obj_ref) = &obj {
+    let target = match &obj {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            args,
+        } => args.first().map(|(_, v)| v).unwrap_or(&obj),
+        _ => &obj,
+    };
+    if let Value::Object(obj_ref) = target {
         Ok(Value::Int(obj_ref.borrow().len() as i64))
-    } else if let Value::Bytes(bytes_ref) = &obj {
+    } else if let Value::Bytes(bytes_ref) = target {
         Ok(Value::Int(bytes_ref.borrow().len() as i64))
-    } else if let Value::String(s) = &obj {
+    } else if let Value::String(s) = target {
         Ok(Value::Int(s.len() as i64))
     } else {
         Err("UnexpectedType, expected object, bytes or string".to_string())
@@ -521,8 +556,7 @@ pub fn len(obj: Value) -> Result<Value, String> {
     raw_object_len(obj)
 }
 
-#[native_function]
-pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
+fn raw_str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     let s = match str {
         Value::String(s) => s,
         _ => return Ok(Value::err("Expected string for byte_at")),
@@ -544,12 +578,41 @@ pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     }
 }
 
+#[native_function]
+pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
+    raw_str_byte_at(str, idx)
+}
+
+#[native_function]
+pub fn byte_at(str: Value, idx: Value) -> Result<Value, String> {
+    raw_str_byte_at(str, idx)
+}
+
 fn result_is_ok(val: Value) -> Result<Value, String> {
-    Ok(Value::Bool(val.is_ok()))
+    match &val {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 0,
+            ..
+        } => Ok(Value::Bool(true)),
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            ..
+        } => Ok(Value::Bool(false)),
+        _ => Ok(Value::Bool(true)),
+    }
 }
 
 fn result_is_err(val: Value) -> Result<Value, String> {
-    Ok(Value::Bool(val.is_err()))
+    match &val {
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            ..
+        } => Ok(Value::Bool(true)),
+        _ => Ok(Value::Bool(false)),
+    }
 }
 
 fn option_is_some(val: Value) -> Result<Value, String> {
@@ -600,7 +663,7 @@ fn unwrap_val(val: Value) -> Result<Value, String> {
             tag: 1,
             ..
         } => Err("called `unwrap()` on a `None` value".to_string()),
-        _ => Err("called `unwrap()` on non-Result/non-Option value".to_string()),
+        other => Ok(other),
     }
 }
 
@@ -622,7 +685,17 @@ fn unwrap_or_val(val: Value, default: Value) -> Result<Value, String> {
                 Ok(default)
             }
         }
-        _ => Ok(default),
+        Value::EnumField {
+            const_idx: 0,
+            tag: 1,
+            ..
+        }
+        | Value::EnumField {
+            const_idx: 1,
+            tag: 1,
+            ..
+        } => Ok(default),
+        other => Ok(other),
     }
 }
 
@@ -664,10 +737,7 @@ fn expect_val(val: Value, msg: Value) -> Result<Value, String> {
             tag: 1,
             ..
         } => Err(format!("{}: None", msg_str)),
-        _ => Err(format!(
-            "{}: called expect on non-Result/non-Option value",
-            msg_str
-        )),
+        _ => Ok(val),
     }
 }
 
@@ -1100,7 +1170,8 @@ fn raw_bytes_to_string(buf: Value) -> Result<Value, String> {
                 Err(e) => Ok(Value::err(format!("Invalid UTF-8: {}", e))),
             }
         }
-        _ => Ok(Value::err("Expected Bytes for bytes_to_string")),
+        Value::String(s) => Ok(Value::ok(Value::String(s))),
+        other => Ok(Value::ok(Value::String(format!("{}", other).into()))),
     }
 }
 
@@ -1702,7 +1773,7 @@ fn compute_sha1(data: &[u8]) -> [u8; 20] {
     }
     msg.extend_from_slice(&len_bits.to_be_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for i in 0..16 {
             let bytes: [u8; 4] = chunk[i * 4..(i + 1) * 4].try_into().unwrap();
@@ -2062,10 +2133,23 @@ fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
             buf.truncate(n);
             Ok(Value::ok(Value::bytes(buf)))
         }
-        Err(e) => Ok(Value::err(Value::String(
-            format!("Read error: {}", e).into(),
-        ))),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(Value::err(Value::String("WouldBlock".to_string().into())))
+            } else if e.kind() == std::io::ErrorKind::TimedOut {
+                Ok(Value::err(Value::String("TimedOut".to_string().into())))
+            } else {
+                Ok(Value::err(Value::String(
+                    format!("Read error: {}", e).into(),
+                )))
+            }
+        }
     }
+}
+
+#[native_function]
+pub fn read(socket_id: Value, max_len: Value) -> Result<Value, String> {
+    raw_net_read(socket_id, max_len)
 }
 
 #[native_function]
@@ -2078,8 +2162,7 @@ pub fn net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
     raw_net_read(socket_id, max_len)
 }
 
-#[native_function]
-pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
     let id = match socket_id {
         Value::Int(i) if i > 0 => i as u64,
         _ => return Ok(Value::err("Expected integer socket id for net_write")),
@@ -2112,7 +2195,21 @@ pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
 }
 
 #[native_function]
-pub fn __net_close(socket_id: Value) -> Result<Value, String> {
+pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+    raw_net_write(socket_id, data)
+}
+
+#[native_function]
+pub fn net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+    raw_net_write(socket_id, data)
+}
+
+#[native_function]
+pub fn write(socket_id: Value, data: Value) -> Result<Value, String> {
+    raw_net_write(socket_id, data)
+}
+
+fn raw_net_close(socket_id: Value) -> Result<Value, String> {
     let id = match socket_id {
         Value::Int(i) if i > 0 => i as u64,
         _ => return Ok(Value::err("Expected integer socket id for net_close")),
@@ -2135,6 +2232,143 @@ pub fn __net_close(socket_id: Value) -> Result<Value, String> {
     } else {
         Ok(Value::ok(Value::Bool(false)))
     }
+}
+
+#[native_function]
+pub fn __net_close(socket_id: Value) -> Result<Value, String> {
+    raw_net_close(socket_id)
+}
+
+#[native_function]
+pub fn net_close(socket_id: Value) -> Result<Value, String> {
+    raw_net_close(socket_id)
+}
+
+#[native_function]
+pub fn close(socket_id: Value) -> Result<Value, String> {
+    raw_net_close(socket_id)
+}
+
+fn raw_net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
+    let id = match socket_id {
+        Value::Int(i) if i > 0 => i as u64,
+        _ => return Ok(Value::err("Expected integer socket id for net_set_timeout")),
+    };
+    let ms = match timeout_ms {
+        Value::Int(i) if i >= 0 => i as u64,
+        _ => return Ok(Value::err("Expected non-negative integer for timeout_ms")),
+    };
+    let timeout = if ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(ms))
+    };
+
+    let sockets = get_sockets().lock().unwrap();
+    if let Some(stream) = sockets.get(&id) {
+        match stream {
+            SocketStream::Tcp(s) => {
+                let _ = s.set_read_timeout(timeout);
+                let _ = s.set_write_timeout(timeout);
+            }
+            SocketStream::Tls(s) => {
+                let _ = s.get_ref().set_read_timeout(timeout);
+                let _ = s.get_ref().set_write_timeout(timeout);
+            }
+            SocketStream::Unix(s) => {
+                let _ = s.set_read_timeout(timeout);
+                let _ = s.set_write_timeout(timeout);
+            }
+        }
+        Ok(Value::ok(Value::Bool(true)))
+    } else {
+        Ok(Value::err("Socket not found or already closed"))
+    }
+}
+
+#[native_function]
+pub fn __net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
+    raw_net_set_timeout(socket_id, timeout_ms)
+}
+
+#[native_function]
+pub fn net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
+    raw_net_set_timeout(socket_id, timeout_ms)
+}
+
+#[native_function]
+pub fn set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
+    raw_net_set_timeout(socket_id, timeout_ms)
+}
+
+fn raw_net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
+    let id = match socket_id {
+        Value::Int(i) if i > 0 => i as u64,
+        _ => {
+            return Ok(Value::err(
+                "Expected integer socket id for net_set_nonblocking",
+            ));
+        }
+    };
+    let nb = match nonblocking {
+        Value::Bool(b) => b,
+        _ => return Ok(Value::err("Expected boolean for nonblocking")),
+    };
+
+    let sockets = get_sockets().lock().unwrap();
+    if let Some(stream) = sockets.get(&id) {
+        let res = match stream {
+            SocketStream::Tcp(s) => s.set_nonblocking(nb),
+            SocketStream::Tls(s) => s.get_ref().set_nonblocking(nb),
+            SocketStream::Unix(s) => s.set_nonblocking(nb),
+        };
+        match res {
+            Ok(()) => Ok(Value::ok(Value::Bool(true))),
+            Err(e) => Ok(Value::err(Value::String(
+                format!("set_nonblocking error: {}", e).into(),
+            ))),
+        }
+    } else {
+        Ok(Value::err("Socket not found or already closed"))
+    }
+}
+
+#[native_function]
+pub fn __net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
+    raw_net_set_nonblocking(socket_id, nonblocking)
+}
+
+#[native_function]
+pub fn net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
+    raw_net_set_nonblocking(socket_id, nonblocking)
+}
+
+#[native_function]
+pub fn set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
+    raw_net_set_nonblocking(socket_id, nonblocking)
+}
+
+fn raw_sleep(ms_val: Value) -> Result<Value, String> {
+    let ms = match ms_val {
+        Value::Int(i) if i >= 0 => i as u64,
+        _ => {
+            return Ok(Value::err(
+                "Expected non-negative integer milliseconds for sleep",
+            ));
+        }
+    };
+    std::thread::sleep(Duration::from_millis(ms));
+    Ok(Value::ok(Value::Bool(true)))
+}
+
+#[native_function]
+pub fn __sleep(ms_val: Value) -> Result<Value, String> {
+    raw_sleep(ms_val)
+}
+
+#[native_function]
+pub fn sleep(ms_val: Value) -> Result<Value, String> {
+    raw_sleep(ms_val)
 }
 
 #[derive(Clone)]
@@ -2272,9 +2506,28 @@ static CORE_FUNCTIONS: std::sync::LazyLock<Vec<NativeFunction>> = std::sync::Laz
         __net_read(),
         __net_write(),
         __net_close(),
+        __net_set_timeout(),
+        __net_set_nonblocking(),
         tcp_connect(),
         tls_connect(),
         net_read(),
+        read(),
+        net_write(),
+        write(),
+        net_close(),
+        close(),
+        net_set_timeout(),
+        set_timeout(),
+        net_set_nonblocking(),
+        set_nonblocking(),
+        join(),
+        strip_prefix(),
+        strip_suffix(),
+        lower(),
+        upper(),
+        byte_at(),
+        __sleep(),
+        sleep(),
     ]
 });
 

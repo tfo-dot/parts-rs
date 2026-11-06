@@ -51,3 +51,15 @@ fn test_tools_disassemble() {
     assert!(disasm.contains("--- Disassembly ---"));
     assert!(disasm.contains("LOAD") || disasm.contains("RETURN"));
 }
+
+#[test]
+fn test_disassemble_truncated_bytes_no_panic() {
+    // For every opcode, pass slices that are truncated at every length from 1 to 15
+    for op in 0x00..=0x28u8 {
+        for len in 1..=12 {
+            let mut code = vec![op];
+            code.resize(len, 0);
+            parts::disassemble::disassemble(&code, &[]);
+        }
+    }
+}

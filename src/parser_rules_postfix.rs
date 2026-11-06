@@ -239,6 +239,30 @@ impl PostfixRule {
                 }),
             },
             PostfixRule {
+                id: "LogicalAnd".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("LOGICAL_AND")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::LogicalAnd,
+                    })
+                }),
+            },
+            PostfixRule {
+                id: "LogicalOr".to_string(),
+                advance_token: true,
+                rule: Arc::new(|parser| parser.check_operator("LOGICAL_OR")),
+                parse: Arc::new(|parser, ast| {
+                    Ok(Ast::Binary {
+                        left: Box::new(ast),
+                        right: Box::new(parser.parse()?),
+                        operator: BinaryOperator::LogicalOr,
+                    })
+                }),
+            },
+            PostfixRule {
                 id: "FunCall".to_string(),
                 advance_token: true,
                 rule: Arc::new(|parser| parser.check_operator("LEFT_PAREN")),

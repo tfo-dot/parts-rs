@@ -429,6 +429,7 @@ impl AstOptimizer {
                 }
                 BinaryOperator::BitSHL => l << r,
                 BinaryOperator::BitSHR => l >> r,
+                BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => return None,
             };
             return Some(Ast::Value(Value::Int(res)));
         }
@@ -466,10 +467,16 @@ impl AstOptimizer {
             }
         }
 
-        if let (Ast::Value(Value::Bool(l)), Ast::Value(Value::Bool(r))) = (left, right)
-            && matches!(op, BinaryOperator::Equals)
-        {
-            return Some(Ast::Value(Value::Bool(l == r)));
+        if let (Ast::Value(Value::Bool(l)), Ast::Value(Value::Bool(r))) = (left, right) {
+            if matches!(op, BinaryOperator::Equals) {
+                return Some(Ast::Value(Value::Bool(l == r)));
+            }
+            if matches!(op, BinaryOperator::LogicalAnd) {
+                return Some(Ast::Value(Value::Bool(*l && *r)));
+            }
+            if matches!(op, BinaryOperator::LogicalOr) {
+                return Some(Ast::Value(Value::Bool(*l || *r)));
+            }
         }
 
         None

@@ -459,16 +459,20 @@ impl ParserRule {
 
                     match raw.lexeme.chars().filter(|c| *c == '.').count() {
                         0 => {
-                            let parsed: i64 = raw.lexeme.parse().map_err(|_err| {
-                                ParserError::TokenMismatch(
-                                    Token {
-                                        kind: TokenType::Number,
-                                        lexeme: "".to_string(),
-                                        span: Span { line: 0, column: 0 },
-                                    },
-                                    parser.peek().unwrap(),
-                                )
-                            })?;
+                            let parsed = raw
+                                .lexeme
+                                .parse::<i64>()
+                                .or_else(|_| raw.lexeme.parse::<u64>().map(|u| u as i64))
+                                .map_err(|_err| {
+                                    ParserError::TokenMismatch(
+                                        Token {
+                                            kind: TokenType::Number,
+                                            lexeme: "".to_string(),
+                                            span: Span { line: 0, column: 0 },
+                                        },
+                                        parser.peek().unwrap(),
+                                    )
+                                })?;
                             Ok(Ast::Value(Value::Int(parsed)))
                         }
                         1 => {
