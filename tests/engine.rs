@@ -98,6 +98,41 @@ mod tests {
     }
 
     #[test]
+    fn test_method_without_explicit_return() {
+        let engine = Engine::new();
+        let source = "
+            let state = 0;
+            return |>
+                on_time_update: fun(time_ms) {
+                    state = time_ms;
+                },
+                get_state: fun() {
+                    return state;
+                }
+            <|;
+        ";
+        let mut instance = engine.instantiate(source).unwrap();
+        assert!(instance.has_method("on_time_update"));
+        assert!(instance.has_method("get_state"));
+
+        let res1 = instance
+            .call_method("on_time_update", vec![Value::Int(123)])
+            .unwrap();
+        assert_eq!(res1, Some(Value::Bool(false)));
+
+        let res2 = instance.call_method("get_state", vec![]).unwrap();
+        assert_eq!(res2, Some(Value::Int(123)));
+
+        let res3 = instance
+            .call_method("on_time_update", vec![Value::Int(456)])
+            .unwrap();
+        assert_eq!(res3, Some(Value::Bool(false)));
+
+        let res4 = instance.call_method("get_state", vec![]).unwrap();
+        assert_eq!(res4, Some(Value::Int(456)));
+    }
+
+    #[test]
     fn test_logical_operators_short_circuit() {
         let mut engine = Engine::new();
         let side_effects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

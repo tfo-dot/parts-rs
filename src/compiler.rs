@@ -1549,6 +1549,14 @@ impl Compiler {
 
                 self.compile(*body);
 
+                if !matches!(self.current().ir_buff.last(), Some(IrOp::Return { .. })) {
+                    let null_reg = self.next_free_address();
+                    self.add_inst(IrOp::LoadBool {
+                        dest: null_reg,
+                        val: false,
+                    });
+                    self.add_inst(IrOp::Return { value: null_reg });
+                }
                 let fun = self.contexts.pop().unwrap();
                 let fun_ir = if self.optimize {
                     IrOptimizer::optimize(fun.ir_buff)

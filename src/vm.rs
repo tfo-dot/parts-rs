@@ -186,7 +186,7 @@ impl VM {
         for (i, arg) in args.into_iter().enumerate() {
             self.stack[fp + i] = arg;
         }
-
+        self.frames.clear();
         self.frames.push(Frame {
             pointer: fp,
             ip: 0,
@@ -371,7 +371,11 @@ impl VM {
                     ip = self.frames[frame_idx].ip;
                     code = Rc::clone(&self.frames[frame_idx].bytecode);
 
-                    self.stack[fp + frame.return_reg as usize] = return_value;
+                    let dest_idx = fp + frame.return_reg as usize;
+                    if dest_idx >= self.stack.len() {
+                        self.stack.resize(dest_idx + 1, Value::Int(0));
+                    }
+                    self.stack[dest_idx] = return_value;
                 }
                 0x11 => {
                     // Call
