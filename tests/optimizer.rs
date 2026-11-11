@@ -571,4 +571,117 @@ mod tests {
         assert_eq!(optimized.len(), 2);
         assert_eq!(optimized[0], IrOp::LoadDouble { dest: 0, val: 2.5 });
     }
+
+    #[test]
+    fn ir_peephole_and_inc_fuse_across_source_location_and_loop_backedge() {
+        use parts::compiler::IrOp;
+        use parts::optimize::IrOptimizer;
+        use parts::parser::BinaryOperator;
+
+        let ir = vec![
+            IrOp::LoadInt { dest: 0, val: 0 },
+            IrOp::Label(0),
+            IrOp::LoadInt { dest: 1, val: 10 },
+            IrOp::Binary {
+                dest: 2,
+                op: BinaryOperator::LessThan,
+                left: 0,
+                right: 1,
+            },
+            IrOp::JumpNot {
+                target: 1,
+                condition: 2,
+            },
+            IrOp::LoadInt { dest: 1, val: 1 },
+            IrOp::SourceLocation { line: 4, col: 5 },
+            IrOp::Binary {
+                dest: 2,
+                op: BinaryOperator::Add,
+                left: 0,
+                right: 1,
+            },
+            IrOp::SourceLocation { line: 4, col: 9 },
+            IrOp::LoadReg { dest: 0, src: 2 },
+            IrOp::Jump { target: 0 },
+            IrOp::Label(1),
+            IrOp::Return { value: 0 },
+        ];
+
+        let optimized = IrOptimizer::optimize(ir);
+        assert!(
+            optimized.contains(&IrOp::Inc { target: 0 }),
+            "expected Inc(0) after fusing LoadReg across SourceLocation + loop back-edge, got: {:?}",
+            optimized
+        );
+        assert!(
+            optimized
+                .iter()
+                .any(|op| matches!(op, IrOp::SourceLocation { line: 4, .. })),
+            "expected SourceLocation ops to be preserved"
+        );
+    }
+
+    #[test]
+    fn ir_peephole_does_not_fuse_when_temp_is_live_across_jump() {
+        use parts::compiler::IrOp;
+        use parts::optimize::IrOptimizer;
+        use parts::parser::BinaryOperator;
+
+        let ir = vec![
+            IrOp::LoadInt { dest: 0, val: 1 },
+            IrOp::LoadInt { dest: 1, val: 2 },
+            IrOp::Binary {
+                dest: 2,
+                op: BinaryOperator::Add,
+                left: 0,
+                right: 1,
+            },
+            IrOp::LoadReg { dest: 3, src: 2 },
+            IrOp::Jump { target: 0 },
+            IrOp::Label(0),
+            IrOp::Binary {
+                dest: 4,
+                op: BinaryOperator::Add,
+                left: 2,
+                right: 3,
+            },
+            IrOp::Return { value: 4 },
+        ];
+
+        let optimized = IrOptimizer::optimize(ir);
+        assert!(
+            !optimized.contains(&IrOp::Binary {
+                dest: 3,
+                op: BinaryOperator::Add,
+                left: 0,
+                right: 1,
+            }),
+            "must not overwrite live temp register 2"
+        );
+    }
+
+    #[test]
+    fn ir_jump_threading_and_elision_across_source_location() {
+        use parts::compiler::IrOp;
+        use parts::optimize::IrOptimizer;
+
+        let ir = vec![
+            IrOp::Jump { target: 1 },
+            IrOp::SourceLocation { line: 2, col: 1 },
+            IrOp::Label(1),
+            IrOp::SourceLocation { line: 3, col: 1 },
+            IrOp::Jump { target: 2 },
+            IrOp::Label(2),
+            IrOp::LoadInt { dest: 0, val: 42 },
+            IrOp::Return { value: 0 },
+        ];
+
+        let optimized = IrOptimizer::optimize(ir);
+        assert!(
+            !optimized.iter().any(|op| matches!(op, IrOp::Jump { .. })),
+            "expected threaded jump to adjacent Label to be elided: {:?}",
+            optimized
+        );
+        assert!(optimized.contains(&IrOp::LoadInt { dest: 0, val: 42 }));
+    }
 }

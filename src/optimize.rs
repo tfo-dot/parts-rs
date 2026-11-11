@@ -554,14 +554,44 @@ impl IrOptimizer {
         current_ir
     }
 
+    fn next_non_loc(ir: &[IrOp], mut idx: usize) -> Option<usize> {
+        while idx < ir.len() {
+            if !matches!(ir[idx], IrOp::SourceLocation { .. }) {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
+    }
+
+    fn build_label_map(ir: &[IrOp]) -> FxHashMap<usize, usize> {
+        let mut map = FxHashMap::default();
+        for (idx, op) in ir.iter().enumerate() {
+            if let IrOp::Label(id) = op {
+                map.insert(*id, idx);
+            }
+        }
+        map
+    }
+
     fn peephole_pass(ir: Vec<IrOp>) -> Vec<IrOp> {
         let mut optimized = Vec::with_capacity(ir.len());
+        let label_map = Self::build_label_map(&ir);
         let mut i = 0;
 
         while i < ir.len() {
-            if i + 1 < ir.len() {
+            if let IrOp::LoadReg { dest, src } = &ir[i]
+                && dest == src
+            {
+                i += 1;
+                continue;
+            }
+
+            if !matches!(ir[i], IrOp::SourceLocation { .. })
+                && let Some(j) = Self::next_non_loc(&ir, i + 1)
+            {
                 let mut op1 = ir[i].clone();
-                let op2 = &ir[i + 1];
+                let op2 = &ir[j];
 
                 if let IrOp::LoadReg {
                     dest: final_dest,
@@ -570,7 +600,7 @@ impl IrOptimizer {
                 {
                     let mut merged = false;
 
-                    if !Self::is_reg_read_after(&ir[i + 2..], *load_src) {
+                    if !Self::is_reg_live_from(&ir, j + 1, *load_src, &label_map) {
                         match &mut op1 {
                             IrOp::Binary { dest, .. }
                             | IrOp::Call { dest, .. }
@@ -579,6 +609,8 @@ impl IrOptimizer {
                             | IrOp::GetProperty { dest, .. }
                             | IrOp::GetPropertyDyn { dest, .. }
                             | IrOp::LoadInt { dest, .. }
+                            | IrOp::LoadDouble { dest, .. }
+                            | IrOp::LoadBool { dest, .. }
                             | IrOp::LoadConst { dest, .. }
                             | IrOp::LoadObject { dest, .. }
                             | IrOp::LoadNative { dest, .. }
@@ -595,8 +627,11 @@ impl IrOptimizer {
                     }
 
                     if merged {
+                        for loc in &ir[i + 1..j] {
+                            optimized.push(loc.clone());
+                        }
                         optimized.push(op1);
-                        i += 2;
+                        i = j + 1;
                         continue;
                     }
                 }
@@ -612,8 +647,11 @@ impl IrOptimizer {
                 if let (IrOp::Jump { target: t1 }, IrOp::Label(t2)) = (&op1, op2)
                     && t1 == t2
                 {
+                    for loc in &ir[i + 1..j] {
+                        optimized.push(loc.clone());
+                    }
                     optimized.push(op2.clone());
-                    i += 2;
+                    i = j + 1;
                     continue;
                 }
             }
@@ -734,9 +772,11 @@ impl IrOptimizer {
         let mut i = 0;
 
         while i < ir.len() {
-            if i + 1 < ir.len() {
+            if !matches!(ir[i], IrOp::SourceLocation { .. })
+                && let Some(j) = Self::next_non_loc(&ir, i + 1)
+            {
                 let op1 = &ir[i];
-                let op2 = &ir[i + 1];
+                let op2 = &ir[j];
 
                 if let IrOp::LoadInt {
                     dest: temp_reg,
@@ -760,21 +800,26 @@ impl IrOptimizer {
 
                     if valid_add || valid_sub {
                         let mut replaced = false;
+                        let mut fused_op = None;
 
                         if (valid_add && *val == 1) || (valid_sub && *val == -1) {
-                            optimized.push(IrOp::Inc {
+                            fused_op = Some(IrOp::Inc {
                                 target: *target_reg,
                             });
                             replaced = true;
                         } else if (valid_sub && *val == 1) || (valid_add && *val == -1) {
-                            optimized.push(IrOp::Dec {
+                            fused_op = Some(IrOp::Dec {
                                 target: *target_reg,
                             });
                             replaced = true;
                         }
 
-                        if replaced {
-                            i += 2;
+                        if replaced && let Some(op) = fused_op {
+                            for loc in &ir[i + 1..j] {
+                                optimized.push(loc.clone());
+                            }
+                            optimized.push(op);
+                            i = j + 1;
                             continue;
                         }
                     }
@@ -889,21 +934,46 @@ impl IrOptimizer {
         optimized
     }
 
-    fn is_reg_read_after(ir: &[IrOp], reg: u8) -> bool {
-        for op in ir {
-            if matches!(op, IrOp::Label(_) | IrOp::Jump { .. }) {
-                return true;
-            }
-            if op.reads_reg(reg) {
-                return true;
-            }
-            if let Some(dest) = op.dest()
-                && dest == reg
-            {
-                return false;
-            }
-            if matches!(op, IrOp::Return { .. } | IrOp::TailCall { .. }) {
-                return false;
+    fn is_reg_live_from(
+        ir: &[IrOp],
+        start: usize,
+        reg: u8,
+        label_map: &FxHashMap<usize, usize>,
+    ) -> bool {
+        let mut worklist = vec![start];
+        let mut visited = FxHashSet::default();
+
+        while let Some(mut idx) = worklist.pop() {
+            while idx < ir.len() {
+                if !visited.insert(idx) {
+                    break;
+                }
+                let op = &ir[idx];
+                if op.reads_reg(reg) {
+                    return true;
+                }
+                if op.dest() == Some(reg) {
+                    break;
+                }
+                match op {
+                    IrOp::Return { .. } | IrOp::TailCall { .. } => break,
+                    IrOp::Jump { target } => {
+                        if let Some(&target_idx) = label_map.get(target) {
+                            worklist.push(target_idx);
+                            break;
+                        }
+                        return true;
+                    }
+                    IrOp::JumpNot { target, .. } => {
+                        if let Some(&target_idx) = label_map.get(target) {
+                            worklist.push(target_idx);
+                        } else {
+                            return true;
+                        }
+                        idx += 1;
+                    }
+                    _ => idx += 1,
+                }
             }
         }
         false
@@ -925,14 +995,13 @@ impl IrOptimizer {
         let mut i = 0;
         while i < ir.len() {
             if let IrOp::Label(l1) = ir[i]
-                && i + 1 < ir.len()
-                && let IrOp::Jump { target: l2 } = ir[i + 1]
+                && let Some(j) = Self::next_non_loc(&ir, i + 1)
+                && let IrOp::Jump { target: l2 } = ir[j]
             {
                 jump_map.insert(l1, l2);
             }
             i += 1;
         }
-
         if jump_map.is_empty() {
             return ir;
         }

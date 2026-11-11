@@ -209,22 +209,84 @@ impl Document {
             "print" => Some(
                 "### `print(...)`\nPrints arguments to standard output without trailing newline.",
             ),
-            "input" => Some("### `input()`\nReads a line from standard input as a `String`."),
             "exec" => Some(
-                "### `std.sys.exec(cmd)`\nExecutes a system shell command and returns the output.",
+                "### `std.sys.exec(cmd)`\nExecutes a system shell command and returns `Result::Ok(stdout)` or `Result::Err(msg)`.",
             ),
-            "env" => Some("### `std.sys.env(key)`\nReads an environment variable."),
+            "env" => Some(
+                "### `std.sys.env(key)`\nReads an environment variable and returns `Result`.",
+            ),
             "len" => Some("### `.len()`\nReturns the length of a string, object, or byte buffer."),
+            "upper" => Some("### `.upper()` / `std.str.upper(s)`\nConverts a string to uppercase."),
+            "lower" => Some("### `.lower()` / `std.str.lower(s)`\nConverts a string to lowercase."),
+            "strip_prefix" => Some(
+                "### `.strip_prefix(prefix)`\nStrips `prefix` from a string, returning `Option::Some(rest)` or `Option::None`.",
+            ),
+            "strip_suffix" => Some(
+                "### `.strip_suffix(suffix)`\nStrips `suffix` from a string, returning `Option::Some(rest)` or `Option::None`.",
+            ),
+            "byte_at" => Some(
+                "### `.byte_at(index)`\nReturns `Result::Ok(codepoint)` at `index` in a string.",
+            ),
+            "join" => Some("### `.join(other)` / `std.str.join(a, b)`\nConcatenates two strings."),
             "unwrap" => Some(
-                "### `.unwrap()`\nUnwraps `Result::Ok` or `Option::Some`, panicking on failure.",
+                "### `.unwrap()`\nUnwraps `Result::Ok` or `Option::Some`, failing on `Err` / `None`.",
             ),
             "unwrap_or" => Some(
                 "### `.unwrap_or(default)`\nUnwraps `Result` / `Option` or returns the fallback default value.",
             ),
-            "is_ok" => Some("### `.is_ok()`\nReturns `true` if the Result is `Ok`."),
-            "is_err" => Some("### `.is_err()`\nReturns `true` if the Result is `Err`."),
-            "is_some" => Some("### `.is_some()`\nReturns `true` if the Option is `Some`."),
-            "is_none" => Some("### `.is_none()`\nReturns `true` if the Option is `None`."),
+            "unwrap_err" => Some(
+                "### `.unwrap_err()`\nUnwraps the error payload of `Result::Err`.",
+            ),
+            "expect" => Some(
+                "### `.expect(msg)`\nUnwraps `Result::Ok` / `Option::Some`, failing with `msg` on `Err` / `None`.",
+            ),
+            "ok_or" => Some(
+                "### `.ok_or(err)`\nConverts `Option::Some(v)` to `Result::Ok(v)` and `Option::None` to `Result::Err(err)`.",
+            ),
+            "is_ok" => Some("### `.is_ok()`\nReturns `true` if the `Result` is `Ok`."),
+            "is_err" => Some("### `.is_err()`\nReturns `true` if the `Result` is `Err`."),
+            "is_some" => Some("### `.is_some()`\nReturns `true` if the `Option` is `Some`."),
+            "is_none" => Some("### `.is_none()`\nReturns `true` if the `Option` is `None`."),
+            "abs" => Some(
+                "### `std.math.abs(x)`\nReturns the absolute value of an integer or double.",
+            ),
+            "pad" => Some(
+                "### `std.bytes.pad(buf, alignment)`\nPads `buf` with zero bytes to a multiple of `alignment`.",
+            ),
+            "push" => Some("### `.push(byte)`\nAppends a single byte (`u8`) to a `Bytes` buffer."),
+            "extend" => Some(
+                "### `.extend(other)`\nAppends bytes from another `Bytes` buffer or `String`.",
+            ),
+            "slice" => Some(
+                "### `.slice(start, end)`\nReturns `Result::Ok(Bytes)` for `[start..end]`.",
+            ),
+            "resize" => Some(
+                "### `.resize(new_len, fill)`\nResizes a `Bytes` buffer to `new_len` using `fill` byte.",
+            ),
+            "fill" => Some("### `.fill(byte)`\nFills all bytes in a `Bytes` buffer with `byte`."),
+            "to_string" => Some(
+                "### `.to_string()`\nDecodes a `Bytes` buffer as UTF-8, returning `Result::Ok(String)`.",
+            ),
+            "to_hex" => Some("### `.to_hex()`\nFormats a `Bytes` buffer as lowercase hex."),
+            "append_u8" => Some("### `.append_u8(val)`\nAppends a `u8` byte to a `Bytes` buffer."),
+            "append_u16_be" => Some(
+                "### `.append_u16_be(val)`\nAppends a big-endian 16-bit integer to a `Bytes` buffer.",
+            ),
+            "append_u16_le" => Some(
+                "### `.append_u16_le(val)`\nAppends a little-endian 16-bit integer to a `Bytes` buffer.",
+            ),
+            "append_u32_be" => Some(
+                "### `.append_u32_be(val)`\nAppends a big-endian 32-bit integer to a `Bytes` buffer.",
+            ),
+            "append_u32_le" => Some(
+                "### `.append_u32_le(val)`\nAppends a little-endian 32-bit integer to a `Bytes` buffer.",
+            ),
+            "append_u64_be" => Some(
+                "### `.append_u64_be(val)`\nAppends a big-endian 64-bit integer to a `Bytes` buffer.",
+            ),
+            "append_u64_le" => Some(
+                "### `.append_u64_le(val)`\nAppends a little-endian 64-bit integer to a `Bytes` buffer.",
+            ),
             _ => None,
         };
 
@@ -303,6 +365,14 @@ impl Document {
                     _ => {}
                 }
             }
+        }
+
+        // 3. Standard library registry modules and exports
+        if let Some(std_doc) = std_hover_doc(&word) {
+            return Some(Hover {
+                contents: MarkupContent::markdown(std_doc),
+                range: None,
+            });
         }
 
         None
@@ -402,12 +472,6 @@ impl Document {
                 "Print without newline",
             ),
             (
-                "input",
-                CompletionItemKind::FUNCTION,
-                "input()",
-                "Read from stdin",
-            ),
-            (
                 "is_ok",
                 CompletionItemKind::METHOD,
                 "is_ok()",
@@ -435,7 +499,7 @@ impl Document {
                 "unwrap",
                 CompletionItemKind::METHOD,
                 "unwrap()",
-                "Unwrap value or panic",
+                "Unwrap value or fail",
             ),
             (
                 "unwrap_or",
@@ -456,6 +520,12 @@ impl Document {
                 "Unwrap with message",
             ),
             (
+                "ok_or",
+                CompletionItemKind::METHOD,
+                "ok_or(${1:err})",
+                "Convert Option to Result",
+            ),
+            (
                 "len",
                 CompletionItemKind::METHOD,
                 "len()",
@@ -464,8 +534,38 @@ impl Document {
             (
                 "join",
                 CompletionItemKind::METHOD,
-                "join(${1:sep})",
-                "Join string",
+                "join(${1:other})",
+                "Concatenate string",
+            ),
+            (
+                "strip_prefix",
+                CompletionItemKind::METHOD,
+                "strip_prefix(${1:prefix})",
+                "Strip string prefix (Option)",
+            ),
+            (
+                "strip_suffix",
+                CompletionItemKind::METHOD,
+                "strip_suffix(${1:suffix})",
+                "Strip string suffix (Option)",
+            ),
+            (
+                "byte_at",
+                CompletionItemKind::METHOD,
+                "byte_at(${1:index})",
+                "Character codepoint at index (Result)",
+            ),
+            (
+                "upper",
+                CompletionItemKind::METHOD,
+                "upper()",
+                "Uppercase string",
+            ),
+            (
+                "lower",
+                CompletionItemKind::METHOD,
+                "lower()",
+                "Lowercase string",
             ),
             (
                 "to_hex",
@@ -474,22 +574,52 @@ impl Document {
                 "Hex representation of bytes",
             ),
             (
-                "to_uppercase",
+                "to_string",
                 CompletionItemKind::METHOD,
-                "to_uppercase()",
-                "Uppercase string",
+                "to_string()",
+                "Decode bytes as UTF-8 (Result)",
             ),
             (
-                "to_lowercase",
+                "slice",
                 CompletionItemKind::METHOD,
-                "to_lowercase()",
-                "Lowercase string",
+                "slice(${1:start}, ${2:end})",
+                "Slice byte buffer (Result)",
+            ),
+            (
+                "extend",
+                CompletionItemKind::METHOD,
+                "extend(${1:other})",
+                "Extend byte buffer",
+            ),
+            (
+                "resize",
+                CompletionItemKind::METHOD,
+                "resize(${1:new_len}, ${2:fill})",
+                "Resize byte buffer",
+            ),
+            (
+                "fill",
+                CompletionItemKind::METHOD,
+                "fill(${1:byte})",
+                "Fill byte buffer",
             ),
             (
                 "push",
                 CompletionItemKind::METHOD,
                 "push(${1:byte})",
                 "Append byte to buffer",
+            ),
+            (
+                "abs",
+                CompletionItemKind::FUNCTION,
+                "abs(${1:x})",
+                "std.math.abs — absolute value",
+            ),
+            (
+                "pad",
+                CompletionItemKind::FUNCTION,
+                "pad(${1:buf}, ${2:alignment})",
+                "std.bytes.pad — zero-pad buffer to alignment",
             ),
             (
                 "append_u8",
@@ -535,7 +665,10 @@ impl Document {
             ),
         ];
 
+        let mut seen_labels = std::collections::HashSet::new();
+
         for (label, kind, snippet, detail) in builtins {
+            seen_labels.insert(label.to_string());
             items.push(CompletionItem {
                 label: label.to_string(),
                 kind: Some(kind),
@@ -546,39 +679,79 @@ impl Document {
             });
         }
 
-        // 3. Standard Library Module imports
-        let std_modules = [
-            ("@std/std.pts", "Core standard library"),
-            ("@std/net.pts", "TCP & Unix Domain Socket networking"),
-            ("@std/ws.pts", "RFC 6455 WebSocket client"),
-            ("@std/bytes.pts", "Byte buffer manipulation"),
-            ("@std/math.pts", "Math functions (sin, cos, floor, pow)"),
-            ("@std/str.pts", "String utility functions"),
-            ("@std/sys.pts", "System & process utilities (exec, env)"),
-            ("@std/result.pts", "Result utility types"),
-            ("@std/option.pts", "Option utility types"),
-        ];
+        // 3. Standard Library Module imports and exports from Rust registry
+        let registry = crate::std::std_registry();
+        let mut mod_keys: Vec<&'static str> = registry.modules.keys().copied().collect();
+        mod_keys.sort_unstable();
 
-        for (mod_path, doc) in std_modules {
-            items.push(CompletionItem {
-                label: mod_path.to_string(),
-                kind: Some(CompletionItemKind::MODULE),
-                detail: Some("Standard Library Module".to_string()),
-                documentation: Some(MarkupContent::markdown(doc)),
-                insert_text: Some(mod_path.to_string()),
-                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            });
+        for mod_key in &mod_keys {
+            let import_label = if *mod_key == "std" {
+                "@std/std.pts".to_string()
+            } else {
+                format!("@std/{}.pts", mod_key.trim_start_matches("std."))
+            };
+            let doc = std_module_summary(mod_key, &registry.modules[mod_key]);
+            if seen_labels.insert(import_label.clone()) {
+                items.push(CompletionItem {
+                    label: import_label.clone(),
+                    kind: Some(CompletionItemKind::MODULE),
+                    detail: Some("Standard Library Module".to_string()),
+                    documentation: Some(MarkupContent::markdown(doc)),
+                    insert_text: Some(import_label),
+                    insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                });
+            }
+        }
+
+        for mod_key in &mod_keys {
+            let spec = &registry.modules[mod_key];
+            let mut const_names: Vec<&'static str> = spec.constants.keys().copied().collect();
+            const_names.sort_unstable();
+            for const_name in const_names {
+                if seen_labels.insert(const_name.to_string()) {
+                    items.push(CompletionItem {
+                        label: const_name.to_string(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some(format!("{}.{}", mod_key, const_name)),
+                        documentation: None,
+                        insert_text: Some(const_name.to_string()),
+                        insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                    });
+                }
+            }
+
+            let mut fn_names: Vec<&'static str> = spec.natives.keys().copied().collect();
+            fn_names.sort_unstable();
+            for fn_name in fn_names {
+                if seen_labels.insert(fn_name.to_string()) {
+                    let native = &spec.natives[fn_name];
+                    let snippet = if native.arity == 0 {
+                        format!("{}()", fn_name)
+                    } else {
+                        let args: Vec<String> = (1..=native.arity)
+                            .map(|i| format!("${{{}:arg{}}}", i, i))
+                            .collect();
+                        format!("{}({})", fn_name, args.join(", "))
+                    };
+                    items.push(CompletionItem {
+                        label: fn_name.to_string(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(format!("{}.{}", mod_key, fn_name)),
+                        documentation: None,
+                        insert_text: Some(snippet),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    });
+                }
+            }
         }
 
         // 4. Local document symbols
         let mut scanner = Scanner::new(ScannerRule::get_default_rules(), self.text.clone());
-        let mut seen = std::collections::HashSet::new();
         while let Ok(tok) = scanner.get_next() {
             if tok.kind == TokenType::Special && tok.lexeme == "EOF" {
                 break;
             }
-            if tok.kind == TokenType::Identifier && !seen.contains(&tok.lexeme) {
-                seen.insert(tok.lexeme.clone());
+            if tok.kind == TokenType::Identifier && seen_labels.insert(tok.lexeme.clone()) {
                 items.push(CompletionItem {
                     label: tok.lexeme.clone(),
                     kind: Some(CompletionItemKind::VARIABLE),
@@ -589,7 +762,6 @@ impl Document {
                 });
             }
         }
-
         items
     }
 
@@ -701,4 +873,91 @@ impl Document {
 
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+fn std_module_summary(mod_key: &str, spec: &crate::std::StdModuleSpec) -> String {
+    let mut parts = Vec::new();
+    if !spec.submodules.is_empty() {
+        let mut subs: Vec<&str> = spec.submodules.keys().copied().collect();
+        subs.sort_unstable();
+        parts.push(format!("Submodules: `{}`", subs.join("`, `")));
+    }
+    if !spec.constants.is_empty() {
+        let mut consts: Vec<&str> = spec.constants.keys().copied().collect();
+        consts.sort_unstable();
+        parts.push(format!("Constants: `{}`", consts.join("`, `")));
+    }
+    if !spec.natives.is_empty() {
+        let mut fns: Vec<&str> = spec.natives.keys().copied().collect();
+        fns.sort_unstable();
+        parts.push(format!("Functions: `{}`", fns.join("`, `")));
+    }
+    if parts.is_empty() {
+        format!("Standard library module `{}`.", mod_key)
+    } else {
+        format!(
+            "### `{}`\nStandard library module.\n\n{}",
+            mod_key,
+            parts.join("\n\n")
+        )
+    }
+}
+
+fn std_hover_doc(word: &str) -> Option<String> {
+    let registry = crate::std::std_registry();
+
+    let mod_key = if word == "std" {
+        Some("std")
+    } else {
+        registry
+            .modules
+            .keys()
+            .find(|k| k.strip_prefix("std.") == Some(word))
+            .copied()
+    };
+    if let Some(key) = mod_key {
+        return Some(std_module_summary(key, &registry.modules[key]));
+    }
+
+    let mut mod_keys: Vec<&'static str> = registry.modules.keys().copied().collect();
+    mod_keys.sort_unstable();
+
+    let mut export_paths = Vec::new();
+    let mut const_val_str = None;
+    let mut native_arity = None;
+
+    for m in &mod_keys {
+        let spec = &registry.modules[m];
+        if let Some(c) = spec.constants.get(word) {
+            export_paths.push(format!("{}.{}", m, word));
+            const_val_str = Some(format!("{:?}", c));
+        }
+        if let Some(f) = spec.natives.get(word) {
+            export_paths.push(format!("{}.{}", m, word));
+            native_arity = Some(f.arity);
+        }
+    }
+
+    if !export_paths.is_empty() {
+        let header = format!("### `{}`", export_paths.join("`, `"));
+        return if let Some(cval) = const_val_str {
+            Some(format!("{}\nStandard library constant (`{}`).", header, cval))
+        } else if let Some(arity) = native_arity {
+            Some(format!(
+                "{}\nStandard library function (arity: {}).",
+                header, arity
+            ))
+        } else {
+            Some(header)
+        };
+    }
+
+    if let Some(f) = crate::std::core_global_by_name(word) {
+        return Some(format!(
+            "### `{}`\nBuilt-in native function (arity: {}).",
+            f.name, f.arity
+        ));
+    }
+
+    None
 }

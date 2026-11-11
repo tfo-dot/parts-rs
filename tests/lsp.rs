@@ -196,6 +196,70 @@ fn test_lsp_hover() {
 }
 
 #[test]
+fn test_lsp_hover_std_registry_and_no_nonexistent_input() {
+    let mut server = LspServer::new();
+
+    let open = r#"{
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": "file:///std_hover.pts",
+                "languageId": "parts",
+                "version": 1,
+                "text": "let std = import `@std/std.pts`;\nlet x = std.math.sin(std.math.PI);\nlet y = input();"
+            }
+        }
+    }"#;
+    server.handle_message(open);
+
+    // Hover on 'sin' (line 1, col 18) -> from std_registry
+    let hover_sin = r#"{
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///std_hover.pts" },
+            "position": { "line": 1, "character": 18 }
+        }
+    }"#;
+    let resps = server.handle_message(hover_sin);
+    let val: serde_json::Value = serde_json::from_str(&resps[0]).unwrap();
+    let hover: Hover = serde_json::from_value(val["result"].clone()).unwrap();
+    assert!(hover.contents.value.contains("std.math.sin"));
+
+    // Hover on 'math' module (line 1, col 13) -> module summary
+    let hover_math = r#"{
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///std_hover.pts" },
+            "position": { "line": 1, "character": 13 }
+        }
+    }"#;
+    let resps = server.handle_message(hover_math);
+    let val: serde_json::Value = serde_json::from_str(&resps[0]).unwrap();
+    let hover: Hover = serde_json::from_value(val["result"].clone()).unwrap();
+    assert!(hover.contents.value.contains("std.math"));
+    assert!(hover.contents.value.contains("sin"));
+
+    // Hover on nonexistent 'input' (line 2, col 9) -> null (no bogus doc)
+    let hover_input = r#"{
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///std_hover.pts" },
+            "position": { "line": 2, "character": 9 }
+        }
+    }"#;
+    let resps = server.handle_message(hover_input);
+    let val: serde_json::Value = serde_json::from_str(&resps[0]).unwrap();
+    assert!(val["result"].is_null());
+}
+
+#[test]
 fn test_lsp_completion() {
     let mut server = LspServer::new();
 
@@ -233,7 +297,16 @@ fn test_lsp_completion() {
     assert!(labels.contains(&"println".to_string()));
     assert!(labels.contains(&"Result::Ok".to_string()));
     assert!(labels.contains(&"@std/std.pts".to_string()));
+    assert!(labels.contains(&"@std/math.pts".to_string()));
+    assert!(labels.contains(&"upper".to_string()));
+    assert!(labels.contains(&"lower".to_string()));
+    assert!(labels.contains(&"sin".to_string()));
+    assert!(labels.contains(&"PI".to_string()));
+    assert!(labels.contains(&"append_u32_le".to_string()));
     assert!(labels.contains(&"my_variable".to_string()));
+    assert!(!labels.contains(&"input".to_string()));
+    assert!(!labels.contains(&"to_uppercase".to_string()));
+    assert!(!labels.contains(&"to_lowercase".to_string()));
 }
 
 #[test]
