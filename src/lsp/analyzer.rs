@@ -491,6 +491,48 @@ impl Document {
                 "push(${1:byte})",
                 "Append byte to buffer",
             ),
+            (
+                "append_u8",
+                CompletionItemKind::METHOD,
+                "append_u8(${1:val})",
+                "Append u8 byte to buffer",
+            ),
+            (
+                "append_u16_be",
+                CompletionItemKind::METHOD,
+                "append_u16_be(${1:val})",
+                "Append 16-bit big-endian integer",
+            ),
+            (
+                "append_u16_le",
+                CompletionItemKind::METHOD,
+                "append_u16_le(${1:val})",
+                "Append 16-bit little-endian integer",
+            ),
+            (
+                "append_u32_be",
+                CompletionItemKind::METHOD,
+                "append_u32_be(${1:val})",
+                "Append 32-bit big-endian integer",
+            ),
+            (
+                "append_u32_le",
+                CompletionItemKind::METHOD,
+                "append_u32_le(${1:val})",
+                "Append 32-bit little-endian integer",
+            ),
+            (
+                "append_u64_be",
+                CompletionItemKind::METHOD,
+                "append_u64_be(${1:val})",
+                "Append 64-bit big-endian integer",
+            ),
+            (
+                "append_u64_le",
+                CompletionItemKind::METHOD,
+                "append_u64_le(${1:val})",
+                "Append 64-bit little-endian integer",
+            ),
         ];
 
         for (label, kind, snippet, detail) in builtins {

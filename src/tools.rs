@@ -252,6 +252,14 @@ impl LanguageTools {
                     4
                 }
             }
+            OpCode::CallNative => {
+                if offset + 4 < code.len() {
+                    5 + code[offset + 4] as usize
+                } else {
+                    5
+                }
+            }
+            OpCode::LoadStdModule => 6,
             OpCode::TailCall => {
                 if offset + 2 < code.len() {
                     3 + code[offset + 2] as usize

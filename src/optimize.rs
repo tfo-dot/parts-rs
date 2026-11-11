@@ -574,6 +574,8 @@ impl IrOptimizer {
                         match &mut op1 {
                             IrOp::Binary { dest, .. }
                             | IrOp::Call { dest, .. }
+                            | IrOp::CallNative { dest, .. }
+                            | IrOp::LoadStdModule { dest, .. }
                             | IrOp::GetProperty { dest, .. }
                             | IrOp::GetPropertyDyn { dest, .. }
                             | IrOp::LoadInt { dest, .. }
@@ -819,6 +821,8 @@ impl IrOptimizer {
                     | IrOp::Jump { .. }
                     | IrOp::JumpNot { .. }
                     | IrOp::Call { .. }
+                    | IrOp::CallNative { .. }
+                    | IrOp::LoadStdModule { .. }
                     | IrOp::TailCall { .. }
             ) {
                 copies.clear();
@@ -831,6 +835,11 @@ impl IrOptimizer {
                 }
                 IrOp::Call { what, args, .. } | IrOp::TailCall { what, args } => {
                     *what = Self::resolve_copy(&copies, *what);
+                    for arg in args.iter_mut() {
+                        *arg = Self::resolve_copy(&copies, *arg);
+                    }
+                }
+                IrOp::CallNative { args, .. } => {
                     for arg in args.iter_mut() {
                         *arg = Self::resolve_copy(&copies, *arg);
                     }

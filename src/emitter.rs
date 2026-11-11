@@ -34,7 +34,9 @@ define_opcodes! {
     LoadNative     = 0x25,
     LoadGlobal     = 0x26,
     MatchEnum      = 0x27,
-    StoreGlobal    = 0x28
+    StoreGlobal    = 0x28,
+    CallNative     = 0x29,
+    LoadStdModule  = 0x2A
 }
 
 impl Emitter {
@@ -63,6 +65,8 @@ impl Emitter {
             IrOp::SetPropertyDyn { .. } => 4,
             IrOp::Return { .. } => 2,
             IrOp::Call { args, .. } => 4 + args.len(),
+            IrOp::CallNative { args, .. } => 5 + args.len(),
+            IrOp::LoadStdModule { .. } => 6,
             IrOp::TailCall { args, .. } => 3 + args.len(),
             IrOp::Binary { .. } => 5,
             IrOp::JumpNot { .. } => 4,
@@ -192,6 +196,23 @@ impl Emitter {
                     buff.push(args.len() as u8);
 
                     buff.extend_from_slice(&args);
+                }
+                IrOp::CallNative { dest, idx, args } => {
+                    buff.push(OpCode::CallNative as u8);
+                    buff.push(dest);
+                    buff.extend_from_slice(&(idx as u16).to_le_bytes());
+                    buff.push(args.len() as u8);
+                    buff.extend_from_slice(&args);
+                }
+                IrOp::LoadStdModule {
+                    dest,
+                    path_idx,
+                    overlay_idx,
+                } => {
+                    buff.push(OpCode::LoadStdModule as u8);
+                    buff.push(dest);
+                    buff.extend_from_slice(&(path_idx as u16).to_le_bytes());
+                    buff.extend_from_slice(&(overlay_idx as u16).to_le_bytes());
                 }
                 IrOp::TailCall { what, args } => {
                     buff.push(OpCode::TailCall as u8);
@@ -368,6 +389,16 @@ pub enum IrOp {
         what: u8,
         args: Vec<u8>,
     },
+    CallNative {
+        dest: u8,
+        idx: usize,
+        args: Vec<u8>,
+    },
+    LoadStdModule {
+        dest: u8,
+        path_idx: usize,
+        overlay_idx: usize,
+    },
     TailCall {
         what: u8,
         args: Vec<u8>,
@@ -415,8 +446,8 @@ impl IrOp {
             | IrOp::LoadInt { dest, .. }
             | IrOp::LoadDouble { dest, .. }
             | IrOp::LoadBool { dest, .. }
-            | IrOp::LoadObject { dest, .. } => f(*dest),
-
+            | IrOp::LoadObject { dest, .. }
+            | IrOp::LoadStdModule { dest, .. } => f(*dest),
             IrOp::LoadReg { dest, src }
             | IrOp::LoadGlobal { dest, src }
             | IrOp::MatchEnum { dest, src, .. } => {
@@ -450,6 +481,12 @@ impl IrOp {
             IrOp::Call { dest, what, args } => {
                 f(*dest);
                 f(*what);
+                for a in args {
+                    f(*a);
+                }
+            }
+            IrOp::CallNative { dest, args, .. } => {
+                f(*dest);
                 for a in args {
                     f(*a);
                 }
@@ -493,6 +530,8 @@ impl IrOp {
             | IrOp::GetProperty { dest, .. }
             | IrOp::GetPropertyDyn { dest, .. }
             | IrOp::Call { dest, .. }
+            | IrOp::CallNative { dest, .. }
+            | IrOp::LoadStdModule { dest, .. }
             | IrOp::LoadEnumField { dest, .. }
             | IrOp::MatchEnum { dest, .. } => Some(*dest),
             _ => None,
@@ -531,6 +570,11 @@ impl IrOp {
                     f(*a);
                 }
             }
+            IrOp::CallNative { args, .. } => {
+                for a in args {
+                    f(*a);
+                }
+            }
             IrOp::TailCall { what, args } => {
                 f(*what);
                 for a in args {
@@ -563,6 +607,8 @@ impl IrOp {
         matches!(
             self,
             IrOp::Call { .. }
+                | IrOp::CallNative { .. }
+                | IrOp::LoadStdModule { .. }
                 | IrOp::TailCall { .. }
                 | IrOp::SetProperty { .. }
                 | IrOp::SetPropertyDyn { .. }

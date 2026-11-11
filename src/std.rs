@@ -25,40 +25,35 @@ fn get_sockets() -> &'static Mutex<FxHashMap<u64, SocketStream>> {
     &SOCKETS
 }
 use crate::value::{NativeFunction, Value};
-use parts_macros::native_function;
+use parts_macros::{native_function, parts_std};
+use rustc_hash::FxHasher;
+use std::sync::LazyLock;
 
-#[native_function]
-pub fn println(args: &[Value]) -> Result<Value, String> {
+fn raw_println(args: &[Value]) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
     }
     println!();
-
     Ok(Value::Bool(true))
 }
 
-#[native_function]
-pub fn print(args: &[Value]) -> Result<Value, String> {
+fn raw_print(args: &[Value]) -> Result<Value, String> {
     for arg in args {
         print!("{}", arg)
     }
-
     Ok(Value::Bool(true))
 }
 
-#[native_function]
-pub fn __timestamp() -> Result<Value, String> {
+fn raw_timestamp() -> Result<Value, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_micros();
-
     Ok(Value::Int(ts as i64))
 }
 
-#[native_function]
-pub fn __iter_of(val: Value) -> Result<Value, String> {
-    return match val {
+fn raw_iter_of(val: Value) -> Result<Value, String> {
+    match val {
         Value::String(s) => {
             let mut hash_map = FxHashMap::default();
 
@@ -90,11 +85,10 @@ pub fn __iter_of(val: Value) -> Result<Value, String> {
             Ok(Value::Object(Rc::new(RefCell::new(hash_map))))
         }
         _ => Err("UnexpectedType, only object/strings".to_string()),
-    };
+    }
 }
 
-#[native_function]
-pub fn __get_next(obj: Value) -> Result<Value, String> {
+fn raw_get_next(obj: Value) -> Result<Value, String> {
     if let Value::Object(obj_ref) = obj {
         let mut map = obj_ref.borrow_mut();
 
@@ -144,8 +138,7 @@ pub fn __get_next(obj: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __has_next(obj: Value) -> Result<Value, String> {
+fn raw_has_next(obj: Value) -> Result<Value, String> {
     if let Value::Object(obj_ref) = obj {
         let map = obj_ref.borrow();
 
@@ -226,8 +219,7 @@ fn get_os_random_bytes(buffer: &mut [u8]) -> std::io::Result<()> {
 
 static RAND_STATE: Mutex<[u64; 2]> = Mutex::new([0, 0]);
 
-#[native_function]
-pub fn __rand() -> Result<Value, String> {
+fn raw_rand() -> Result<Value, String> {
     let mut state = RAND_STATE.lock().unwrap();
 
     if state[0] == 0 && state[1] == 0 {
@@ -271,8 +263,7 @@ pub fn __rand() -> Result<Value, String> {
     Ok(Value::Double(result))
 }
 
-#[native_function(arity = 1)]
-pub fn __exec(args: &[Value]) -> Result<Value, String> {
+fn raw_exec(args: &[Value]) -> Result<Value, String> {
     let raw_cmd = match args.first() {
         Some(Value::String(s)) => s,
         _ => return Ok(Value::err("Expected string command for exec")),
@@ -313,8 +304,7 @@ pub fn __exec(args: &[Value]) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __env(name: Value) -> Result<Value, String> {
+fn raw_env(name: Value) -> Result<Value, String> {
     let name = match name {
         Value::String(s) => s,
         _ => return Ok(Value::err("Expected string argument for env")),
@@ -342,18 +332,7 @@ fn raw_join_str(arg_one: Value, arg_two: Value) -> Result<Value, String> {
     Ok(Value::String(format!("{}{}", s1, s2).into()))
 }
 
-#[native_function]
-pub fn __joinStr(arg_one: Value, arg_two: Value) -> Result<Value, String> {
-    raw_join_str(arg_one, arg_two)
-}
-
-#[native_function]
-pub fn join(arg_one: Value, arg_two: Value) -> Result<Value, String> {
-    raw_join_str(arg_one, arg_two)
-}
-
-#[native_function]
-pub fn __math_sin(val: Value) -> Result<Value, String> {
+fn raw_math_sin(val: Value) -> Result<Value, String> {
     match val {
         Value::Double(d) => Ok(Value::Double(d.sin())),
         Value::Int(i) => Ok(Value::Double((i as f64).sin())),
@@ -361,8 +340,7 @@ pub fn __math_sin(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __math_cos(val: Value) -> Result<Value, String> {
+fn raw_math_cos(val: Value) -> Result<Value, String> {
     match val {
         Value::Double(d) => Ok(Value::Double(d.cos())),
         Value::Int(i) => Ok(Value::Double((i as f64).cos())),
@@ -370,8 +348,7 @@ pub fn __math_cos(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __math_floor(val: Value) -> Result<Value, String> {
+fn raw_math_floor(val: Value) -> Result<Value, String> {
     if let Value::Double(d) = val {
         Ok(Value::Int(d.floor() as i64))
     } else if let Value::Int(i) = val {
@@ -381,8 +358,7 @@ pub fn __math_floor(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __math_pow(exp: Value, pow: Value) -> Result<Value, String> {
+fn raw_math_pow(exp: Value, pow: Value) -> Result<Value, String> {
     let i1 = match exp {
         Value::Int(i) => i,
         _ => return Err("Expected int lol".to_string()),
@@ -393,11 +369,10 @@ pub fn __math_pow(exp: Value, pow: Value) -> Result<Value, String> {
         _ => return Err("Expected int lol".to_string()),
     };
 
-    return Ok(Value::Int(i1.pow(i2 as u32)));
+    Ok(Value::Int(i1.pow(i2 as u32)))
 }
 
-#[native_function]
-pub fn __str_len(val: Value) -> Result<Value, String> {
+fn raw_str_len(val: Value) -> Result<Value, String> {
     match val {
         Value::String(s) => Ok(Value::Int(s.len() as i64)),
         _ => Err("Expected string".to_string()),
@@ -424,15 +399,6 @@ fn raw_str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
-    raw_str_strip_prefix(str, prefix)
-}
-
-#[native_function]
-pub fn strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
-    raw_str_strip_prefix(str, prefix)
-}
 
 fn raw_str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
     let s1 = match str {
@@ -454,15 +420,6 @@ fn raw_str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
-    raw_str_strip_suffix(str, suffix)
-}
-
-#[native_function]
-pub fn strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
-    raw_str_strip_suffix(str, suffix)
-}
 
 fn raw_str_upper(val: Value) -> Result<Value, String> {
     match val {
@@ -471,15 +428,6 @@ fn raw_str_upper(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_upper(val: Value) -> Result<Value, String> {
-    raw_str_upper(val)
-}
-
-#[native_function]
-pub fn upper(val: Value) -> Result<Value, String> {
-    raw_str_upper(val)
-}
 
 fn raw_str_lower(val: Value) -> Result<Value, String> {
     match val {
@@ -488,18 +436,8 @@ fn raw_str_lower(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_lower(val: Value) -> Result<Value, String> {
-    raw_str_lower(val)
-}
 
-#[native_function]
-pub fn lower(val: Value) -> Result<Value, String> {
-    raw_str_lower(val)
-}
-
-#[native_function]
-pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Value, String> {
+fn raw_byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Value, String> {
     let i1 = match left {
         Value::Int(i) => i,
         _ => return Err("Expected int lol".to_string()),
@@ -523,7 +461,7 @@ pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Valu
         _ => return Err("Value out of expected range".to_string()),
     };
 
-    return Ok(Value::Int(x));
+    Ok(Value::Int(x))
 }
 
 fn raw_object_len(obj: Value) -> Result<Value, String> {
@@ -546,15 +484,6 @@ fn raw_object_len(obj: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __object_len(obj: Value) -> Result<Value, String> {
-    raw_object_len(obj)
-}
-
-#[native_function]
-pub fn len(obj: Value) -> Result<Value, String> {
-    raw_object_len(obj)
-}
 
 fn raw_str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     let s = match str {
@@ -578,15 +507,6 @@ fn raw_str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
-    raw_str_byte_at(str, idx)
-}
-
-#[native_function]
-pub fn byte_at(str: Value, idx: Value) -> Result<Value, String> {
-    raw_str_byte_at(str, idx)
-}
 
 fn result_is_ok(val: Value) -> Result<Value, String> {
     match &val {
@@ -833,135 +753,6 @@ fn result_to_err(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __result_is_ok(val: Value) -> Result<Value, String> {
-    result_is_ok(val)
-}
-
-#[native_function]
-pub fn is_ok(val: Value) -> Result<Value, String> {
-    result_is_ok(val)
-}
-
-#[native_function]
-pub fn __result_is_err(val: Value) -> Result<Value, String> {
-    result_is_err(val)
-}
-
-#[native_function]
-pub fn is_err(val: Value) -> Result<Value, String> {
-    result_is_err(val)
-}
-
-#[native_function]
-pub fn __option_is_some(val: Value) -> Result<Value, String> {
-    option_is_some(val)
-}
-
-#[native_function]
-pub fn is_some(val: Value) -> Result<Value, String> {
-    option_is_some(val)
-}
-
-#[native_function]
-pub fn __option_is_none(val: Value) -> Result<Value, String> {
-    option_is_none(val)
-}
-
-#[native_function]
-pub fn is_none(val: Value) -> Result<Value, String> {
-    option_is_none(val)
-}
-
-#[native_function]
-pub fn __result_unwrap(val: Value) -> Result<Value, String> {
-    unwrap_val(val)
-}
-
-#[native_function]
-pub fn unwrap(val: Value) -> Result<Value, String> {
-    unwrap_val(val)
-}
-
-#[native_function]
-pub fn __result_unwrap_or(val: Value, default: Value) -> Result<Value, String> {
-    unwrap_or_val(val, default)
-}
-
-#[native_function]
-pub fn unwrap_or(val: Value, default: Value) -> Result<Value, String> {
-    unwrap_or_val(val, default)
-}
-
-#[native_function]
-pub fn __result_expect(val: Value, msg: Value) -> Result<Value, String> {
-    expect_val(val, msg)
-}
-
-#[native_function]
-pub fn expect(val: Value, msg: Value) -> Result<Value, String> {
-    expect_val(val, msg)
-}
-
-#[native_function]
-pub fn __result_unwrap_err(val: Value) -> Result<Value, String> {
-    unwrap_err_val(val)
-}
-
-#[native_function]
-pub fn unwrap_err(val: Value) -> Result<Value, String> {
-    unwrap_err_val(val)
-}
-
-#[native_function]
-pub fn __option_ok_or(val: Value, err: Value) -> Result<Value, String> {
-    option_ok_or(val, err)
-}
-
-#[native_function]
-pub fn ok_or(val: Value, err: Value) -> Result<Value, String> {
-    option_ok_or(val, err)
-}
-
-#[native_function]
-pub fn __result_ok(val: Value) -> Result<Value, String> {
-    result_to_ok(val)
-}
-
-#[native_function]
-pub fn ok(val: Value) -> Result<Value, String> {
-    result_to_ok(val)
-}
-
-#[native_function]
-pub fn __result_err(err: Value) -> Result<Value, String> {
-    result_to_err(err)
-}
-
-#[native_function]
-pub fn err(err: Value) -> Result<Value, String> {
-    result_to_err(err)
-}
-
-#[native_function]
-pub fn __option_some(val: Value) -> Result<Value, String> {
-    Ok(Value::some(val))
-}
-
-#[native_function]
-pub fn some(val: Value) -> Result<Value, String> {
-    Ok(Value::some(val))
-}
-
-#[native_function]
-pub fn __option_none() -> Result<Value, String> {
-    Ok(Value::none())
-}
-
-#[native_function]
-pub fn none() -> Result<Value, String> {
-    Ok(Value::none())
-}
 fn raw_bytes_new(size: Value) -> Result<Value, String> {
     let s = match size {
         Value::Int(i) if i >= 0 => i as usize,
@@ -1443,321 +1234,104 @@ fn raw_bytes_set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, 
         _ => Ok(Value::err("Expected Bytes")),
     }
 }
-
-#[native_function]
-pub fn __bytes_new(size: Value) -> Result<Value, String> {
-    raw_bytes_new(size)
+fn raw_bytes_append_u8(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => (i & 0xFF) as u8,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().push(num);
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn bytes_new(size: Value) -> Result<Value, String> {
-    raw_bytes_new(size)
+fn raw_bytes_append_u16_be(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u16,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_be_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn bytes(size: Value) -> Result<Value, String> {
-    raw_bytes_new(size)
+fn raw_bytes_append_u16_le(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u16,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_le_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn __bytes_from_string(str_val: Value) -> Result<Value, String> {
-    raw_bytes_from_string(str_val)
+fn raw_bytes_append_u32_be(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u32,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_be_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn bytes_from_string(str_val: Value) -> Result<Value, String> {
-    raw_bytes_from_string(str_val)
+fn raw_bytes_append_u32_le(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u32,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_le_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn __bytes_from_array(arr: Value) -> Result<Value, String> {
-    raw_bytes_from_array(arr)
+fn raw_bytes_append_u64_be(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u64,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_be_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn bytes_from_array(arr: Value) -> Result<Value, String> {
-    raw_bytes_from_array(arr)
+fn raw_bytes_append_u64_le(buf: Value, val: Value) -> Result<Value, String> {
+    let num = match val {
+        Value::Int(i) => i as u64,
+        _ => return Ok(Value::err("Expected integer value")),
+    };
+    match buf {
+        Value::Bytes(b) => {
+            b.borrow_mut().extend_from_slice(&num.to_le_bytes());
+            Ok(Value::ok(Value::Bool(true)))
+        }
+        _ => Ok(Value::err("Expected Bytes")),
+    }
 }
 
-#[native_function]
-pub fn __bytes_from_hex(hex_val: Value) -> Result<Value, String> {
-    raw_bytes_from_hex(hex_val)
-}
-
-#[native_function]
-pub fn bytes_from_hex(hex_val: Value) -> Result<Value, String> {
-    raw_bytes_from_hex(hex_val)
-}
-
-#[native_function]
-pub fn __bytes_len(buf: Value) -> Result<Value, String> {
-    raw_bytes_len(buf)
-}
-
-#[native_function]
-pub fn bytes_len(buf: Value) -> Result<Value, String> {
-    raw_bytes_len(buf)
-}
-
-#[native_function]
-pub fn __bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
-    raw_bytes_get(buf, idx)
-}
-
-#[native_function]
-pub fn bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
-    raw_bytes_get(buf, idx)
-}
-
-#[native_function]
-pub fn __bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set(buf, idx, val)
-}
-
-#[native_function]
-pub fn bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set(buf, idx, val)
-}
-
-#[native_function]
-pub fn __bytes_push(buf: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_push(buf, val)
-}
-
-#[native_function]
-pub fn bytes_push(buf: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_push(buf, val)
-}
-
-#[native_function]
-pub fn __bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
-    raw_bytes_extend(buf, other)
-}
-
-#[native_function]
-pub fn bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
-    raw_bytes_extend(buf, other)
-}
-
-#[native_function]
-pub fn __bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
-    raw_bytes_slice(buf, start, end)
-}
-
-#[native_function]
-pub fn bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
-    raw_bytes_slice(buf, start, end)
-}
-
-#[native_function]
-pub fn __bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
-    raw_bytes_resize(buf, new_len, fill)
-}
-
-#[native_function]
-pub fn bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
-    raw_bytes_resize(buf, new_len, fill)
-}
-
-#[native_function]
-pub fn __bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
-    raw_bytes_fill(buf, byte_val)
-}
-
-#[native_function]
-pub fn bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
-    raw_bytes_fill(buf, byte_val)
-}
-
-#[native_function]
-pub fn __bytes_to_string(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_string(buf)
-}
-
-#[native_function]
-pub fn bytes_to_string(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_string(buf)
-}
-
-#[native_function]
-pub fn __bytes_to_hex(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_hex(buf)
-}
-
-#[native_function]
-pub fn bytes_to_hex(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_hex(buf)
-}
-
-#[native_function]
-pub fn __bytes_get_u8(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get(buf, offset)
-}
-#[native_function]
-pub fn get_u8(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_set_u8(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set(buf, offset, val)
-}
-#[native_function]
-pub fn set_u8(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u16_be(buf, offset)
-}
-#[native_function]
-pub fn get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u16_be(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u16_le(buf, offset)
-}
-#[native_function]
-pub fn get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u16_le(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u16_be(buf, offset, val)
-}
-#[native_function]
-pub fn set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u16_be(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u16_le(buf, offset, val)
-}
-#[native_function]
-pub fn set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u16_le(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u32_be(buf, offset)
-}
-#[native_function]
-pub fn get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u32_be(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u32_le(buf, offset)
-}
-#[native_function]
-pub fn get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u32_le(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u32_be(buf, offset, val)
-}
-#[native_function]
-pub fn set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u32_be(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u32_le(buf, offset, val)
-}
-#[native_function]
-pub fn set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u32_le(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u64_be(buf, offset)
-}
-#[native_function]
-pub fn get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u64_be(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u64_le(buf, offset)
-}
-#[native_function]
-pub fn get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
-    raw_bytes_get_u64_le(buf, offset)
-}
-
-#[native_function]
-pub fn __bytes_set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u64_be(buf, offset, val)
-}
-#[native_function]
-pub fn set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u64_be(buf, offset, val)
-}
-
-#[native_function]
-pub fn __bytes_set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u64_le(buf, offset, val)
-}
-#[native_function]
-pub fn set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set_u64_le(buf, offset, val)
-}
-#[native_function]
-pub fn to_string(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_string(buf)
-}
-
-#[native_function]
-pub fn to_hex(buf: Value) -> Result<Value, String> {
-    raw_bytes_to_hex(buf)
-}
-
-#[native_function]
-pub fn slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
-    raw_bytes_slice(buf, start, end)
-}
-
-#[native_function]
-pub fn push(buf: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_push(buf, val)
-}
-
-#[native_function]
-pub fn extend(buf: Value, other: Value) -> Result<Value, String> {
-    raw_bytes_extend(buf, other)
-}
-
-#[native_function]
-pub fn fill(buf: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_fill(buf, val)
-}
-
-#[native_function]
-pub fn resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
-    raw_bytes_resize(buf, new_len, fill)
-}
-
-#[native_function]
-pub fn get(buf: Value, idx: Value) -> Result<Value, String> {
-    raw_bytes_get(buf, idx)
-}
-
-#[native_function]
-pub fn set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
-    raw_bytes_set(buf, idx, val)
-}
 fn compute_sha1(data: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xEFCDAB89;
@@ -1901,15 +1475,6 @@ fn raw_sha1(val: Value) -> Result<Value, String> {
     Ok(Value::ok(Value::bytes(hash.to_vec())))
 }
 
-#[native_function]
-pub fn __sha1(val: Value) -> Result<Value, String> {
-    raw_sha1(val)
-}
-
-#[native_function]
-pub fn sha1(val: Value) -> Result<Value, String> {
-    raw_sha1(val)
-}
 
 fn raw_base64_encode(val: Value) -> Result<Value, String> {
     let bytes = match &val {
@@ -1920,15 +1485,6 @@ fn raw_base64_encode(val: Value) -> Result<Value, String> {
     Ok(Value::String(encode_base64(&bytes).into()))
 }
 
-#[native_function]
-pub fn __base64_encode(val: Value) -> Result<Value, String> {
-    raw_base64_encode(val)
-}
-
-#[native_function]
-pub fn base64_encode(val: Value) -> Result<Value, String> {
-    raw_base64_encode(val)
-}
 
 fn raw_base64_decode(val: Value) -> Result<Value, String> {
     let s = match val {
@@ -1941,15 +1497,6 @@ fn raw_base64_decode(val: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __base64_decode(val: Value) -> Result<Value, String> {
-    raw_base64_decode(val)
-}
-
-#[native_function]
-pub fn base64_decode(val: Value) -> Result<Value, String> {
-    raw_base64_decode(val)
-}
 
 fn raw_sec_websocket_accept(key: Value) -> Result<Value, String> {
     let k = match key {
@@ -1961,15 +1508,6 @@ fn raw_sec_websocket_accept(key: Value) -> Result<Value, String> {
     Ok(Value::String(encode_base64(&hash).into()))
 }
 
-#[native_function]
-pub fn __sec_websocket_accept(key: Value) -> Result<Value, String> {
-    raw_sec_websocket_accept(key)
-}
-
-#[native_function]
-pub fn sec_websocket_accept(key: Value) -> Result<Value, String> {
-    raw_sec_websocket_accept(key)
-}
 
 pub static EXTRA_NATIVES: std::sync::OnceLock<std::sync::Mutex<Vec<NativeFunction>>> =
     std::sync::OnceLock::new();
@@ -2014,15 +1552,6 @@ fn raw_net_tcp_connect(addr: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __net_tcp_connect(addr: Value) -> Result<Value, String> {
-    raw_net_tcp_connect(addr)
-}
-
-#[native_function]
-pub fn tcp_connect(addr: Value) -> Result<Value, String> {
-    raw_net_tcp_connect(addr)
-}
 
 fn raw_net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
     let host_str = match host {
@@ -2071,18 +1600,8 @@ fn raw_net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
-    raw_net_tls_connect(host, port)
-}
 
-#[native_function]
-pub fn tls_connect(host: Value, port: Value) -> Result<Value, String> {
-    raw_net_tls_connect(host, port)
-}
-
-#[native_function]
-pub fn __net_unix_connect(path: Value) -> Result<Value, String> {
+fn raw_net_unix_connect(path: Value) -> Result<Value, String> {
     let path_str = match path {
         Value::String(s) => s.to_string(),
         _ => return Ok(Value::err("Expected string path for unix_connect")),
@@ -2147,20 +1666,6 @@ fn raw_net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn read(socket_id: Value, max_len: Value) -> Result<Value, String> {
-    raw_net_read(socket_id, max_len)
-}
-
-#[native_function]
-pub fn __net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
-    raw_net_read(socket_id, max_len)
-}
-
-#[native_function]
-pub fn net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
-    raw_net_read(socket_id, max_len)
-}
 
 fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
     let id = match socket_id {
@@ -2194,20 +1699,6 @@ fn raw_net_write(socket_id: Value, data: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
-    raw_net_write(socket_id, data)
-}
-
-#[native_function]
-pub fn net_write(socket_id: Value, data: Value) -> Result<Value, String> {
-    raw_net_write(socket_id, data)
-}
-
-#[native_function]
-pub fn write(socket_id: Value, data: Value) -> Result<Value, String> {
-    raw_net_write(socket_id, data)
-}
 
 fn raw_net_close(socket_id: Value) -> Result<Value, String> {
     let id = match socket_id {
@@ -2234,20 +1725,6 @@ fn raw_net_close(socket_id: Value) -> Result<Value, String> {
     }
 }
 
-#[native_function]
-pub fn __net_close(socket_id: Value) -> Result<Value, String> {
-    raw_net_close(socket_id)
-}
-
-#[native_function]
-pub fn net_close(socket_id: Value) -> Result<Value, String> {
-    raw_net_close(socket_id)
-}
-
-#[native_function]
-pub fn close(socket_id: Value) -> Result<Value, String> {
-    raw_net_close(socket_id)
-}
 
 fn raw_net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
     let id = match socket_id {
@@ -2286,20 +1763,6 @@ fn raw_net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, Str
     }
 }
 
-#[native_function]
-pub fn __net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
-    raw_net_set_timeout(socket_id, timeout_ms)
-}
-
-#[native_function]
-pub fn net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
-    raw_net_set_timeout(socket_id, timeout_ms)
-}
-
-#[native_function]
-pub fn set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
-    raw_net_set_timeout(socket_id, timeout_ms)
-}
 
 fn raw_net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
     let id = match socket_id {
@@ -2333,20 +1796,6 @@ fn raw_net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value
     }
 }
 
-#[native_function]
-pub fn __net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
-    raw_net_set_nonblocking(socket_id, nonblocking)
-}
-
-#[native_function]
-pub fn net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
-    raw_net_set_nonblocking(socket_id, nonblocking)
-}
-
-#[native_function]
-pub fn set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
-    raw_net_set_nonblocking(socket_id, nonblocking)
-}
 
 fn raw_sleep(ms_val: Value) -> Result<Value, String> {
     let ms = match ms_val {
@@ -2361,14 +1810,523 @@ fn raw_sleep(ms_val: Value) -> Result<Value, String> {
     Ok(Value::ok(Value::Bool(true)))
 }
 
-#[native_function]
-pub fn __sleep(ms_val: Value) -> Result<Value, String> {
-    raw_sleep(ms_val)
+#[parts_std(overlays = [("std.math", "std/math.pts"), ("std.bytes", "std/bytes.pts"), ("std.ws", "std/ws.pts")])]
+pub mod builtins {
+    use super::*;
+
+    #[std_const(module = "std.math", export = "PI")]
+    pub const PI: f64 = std::f64::consts::PI;
+
+    #[native_function]
+    pub fn println(args: &[Value]) -> Result<Value, String> {
+        raw_println(args)
+    }
+
+    #[native_function]
+    pub fn print(args: &[Value]) -> Result<Value, String> {
+        raw_print(args)
+    }
+
+    #[native_function(module = "std.sys", export = "time", globals = ["__timestamp"])]
+    pub fn __timestamp() -> Result<Value, String> {
+        raw_timestamp()
+    }
+
+    #[native_function]
+    pub fn __iter_of(val: Value) -> Result<Value, String> {
+        raw_iter_of(val)
+    }
+
+    #[native_function]
+    pub fn __get_next(obj: Value) -> Result<Value, String> {
+        raw_get_next(obj)
+    }
+
+    #[native_function]
+    pub fn __has_next(obj: Value) -> Result<Value, String> {
+        raw_has_next(obj)
+    }
+
+    #[native_function(module = "std.math", export = "rand", globals = ["__rand"])]
+    pub fn __rand() -> Result<Value, String> {
+        raw_rand()
+    }
+
+    #[native_function(arity = 1, module = "std.sys", export = "exec", globals = ["__exec"])]
+    pub fn __exec(args: &[Value]) -> Result<Value, String> {
+        raw_exec(args)
+    }
+
+    #[native_function(module = "std.sys", export = "env", globals = ["__env"])]
+    pub fn __env(name: Value) -> Result<Value, String> {
+        raw_env(name)
+    }
+
+    #[native_function(module = "std.str", export = "join", globals = ["__joinStr", "join"])]
+    pub fn __joinStr(arg_one: Value, arg_two: Value) -> Result<Value, String> {
+        raw_join_str(arg_one, arg_two)
+    }
+
+    #[native_function(module = "std.math", export = "sin", globals = ["__math_sin"])]
+    pub fn __math_sin(val: Value) -> Result<Value, String> {
+        raw_math_sin(val)
+    }
+
+    #[native_function(module = "std.math", export = "cos", globals = ["__math_cos"])]
+    pub fn __math_cos(val: Value) -> Result<Value, String> {
+        raw_math_cos(val)
+    }
+
+    #[native_function(module = "std.math", export = "floor", globals = ["__math_floor"])]
+    pub fn __math_floor(val: Value) -> Result<Value, String> {
+        raw_math_floor(val)
+    }
+
+    #[native_function(module = "std.math", export = "pow", globals = ["__math_pow"])]
+    pub fn __math_pow(exp: Value, pow: Value) -> Result<Value, String> {
+        raw_math_pow(exp, pow)
+    }
+
+    #[native_function(module = "std.str", export = "len", globals = ["__str_len"])]
+    pub fn __str_len(val: Value) -> Result<Value, String> {
+        raw_str_len(val)
+    }
+
+    #[native_function(module = "std.str", export = "strip_prefix", globals = ["__str_strip_prefix", "strip_prefix"])]
+    pub fn __str_strip_prefix(str: Value, prefix: Value) -> Result<Value, String> {
+        raw_str_strip_prefix(str, prefix)
+    }
+
+    #[native_function(module = "std.str", export = "strip_suffix", globals = ["__str_strip_suffix", "strip_suffix"])]
+    pub fn __str_strip_suffix(str: Value, suffix: Value) -> Result<Value, String> {
+        raw_str_strip_suffix(str, suffix)
+    }
+
+    #[native_function(module = "std.str", export = "lower", globals = ["__str_lower", "lower"])]
+    pub fn __str_lower(val: Value) -> Result<Value, String> {
+        raw_str_lower(val)
+    }
+
+    #[native_function(module = "std.str", export = "upper", globals = ["__str_upper", "upper"])]
+    pub fn __str_upper(val: Value) -> Result<Value, String> {
+        raw_str_upper(val)
+    }
+
+    #[native_function(module = "std.str", export = "byte_at", globals = ["__str_byte_at", "byte_at"])]
+    pub fn __str_byte_at(str: Value, idx: Value) -> Result<Value, String> {
+        raw_str_byte_at(str, idx)
+    }
+
+    #[native_function(module = "std", export = "rotate_left", globals = ["__byte_rotate_left"])]
+    pub fn __byte_rotate_left(left: Value, right: Value, mask: Value) -> Result<Value, String> {
+        raw_byte_rotate_left(left, right, mask)
+    }
+
+    #[native_function(module = "std", export = "len", globals = ["__object_len", "len"])]
+    pub fn __object_len(obj: Value) -> Result<Value, String> {
+        raw_object_len(obj)
+    }
+
+    #[native_function(modules = ["std", "std.result"], export = "is_ok", globals = ["__result_is_ok", "is_ok"])]
+    pub fn __result_is_ok(val: Value) -> Result<Value, String> {
+        result_is_ok(val)
+    }
+
+    #[native_function(modules = ["std", "std.result"], export = "is_err", globals = ["__result_is_err", "is_err"])]
+    pub fn __result_is_err(val: Value) -> Result<Value, String> {
+        result_is_err(val)
+    }
+
+    #[native_function(modules = ["std", "std.option"], export = "is_some", globals = ["__option_is_some", "is_some"])]
+    pub fn __option_is_some(val: Value) -> Result<Value, String> {
+        option_is_some(val)
+    }
+
+    #[native_function(modules = ["std", "std.option"], export = "is_none", globals = ["__option_is_none", "is_none"])]
+    pub fn __option_is_none(val: Value) -> Result<Value, String> {
+        option_is_none(val)
+    }
+
+    #[native_function(modules = ["std", "std.result", "std.option"], export = "unwrap", globals = ["__result_unwrap", "unwrap"])]
+    pub fn __result_unwrap(val: Value) -> Result<Value, String> {
+        unwrap_val(val)
+    }
+
+    #[native_function(modules = ["std", "std.result", "std.option"], export = "unwrap_or", globals = ["__result_unwrap_or", "unwrap_or"])]
+    pub fn __result_unwrap_or(val: Value, default: Value) -> Result<Value, String> {
+        unwrap_or_val(val, default)
+    }
+
+    #[native_function(modules = ["std", "std.result", "std.option"], export = "expect", globals = ["__result_expect", "expect"])]
+    pub fn __result_expect(val: Value, msg: Value) -> Result<Value, String> {
+        expect_val(val, msg)
+    }
+
+    #[native_function(modules = ["std", "std.result"], export = "unwrap_err", globals = ["__result_unwrap_err", "unwrap_err"])]
+    pub fn __result_unwrap_err(val: Value) -> Result<Value, String> {
+        unwrap_err_val(val)
+    }
+
+    #[native_function(modules = ["std", "std.option"], export = "ok_or", globals = ["__option_ok_or", "ok_or"])]
+    pub fn __option_ok_or(val: Value, err: Value) -> Result<Value, String> {
+        option_ok_or(val, err)
+    }
+
+    #[native_function(exports = ["std.Ok", "std.result.ok", "std.result.Ok"], globals = ["__result_ok", "ok"])]
+    pub fn __result_ok(val: Value) -> Result<Value, String> {
+        result_to_ok(val)
+    }
+
+    #[native_function(exports = ["std.Err", "std.result.err", "std.result.Err"], globals = ["__result_err", "err"])]
+    pub fn __result_err(err: Value) -> Result<Value, String> {
+        result_to_err(err)
+    }
+
+    #[native_function(exports = ["std.Some", "std.option.some", "std.option.Some"], globals = ["__option_some", "some"])]
+    pub fn __option_some(val: Value) -> Result<Value, String> {
+        Ok(Value::some(val))
+    }
+
+    #[native_function(exports = ["std.None", "std.option.none", "std.option.None"], globals = ["__option_none", "none"])]
+    pub fn __option_none() -> Result<Value, String> {
+        Ok(Value::none())
+    }
+
+    #[native_function(module = "std.bytes", export = "new", globals = ["__bytes_new", "bytes_new", "bytes"])]
+    pub fn __bytes_new(size: Value) -> Result<Value, String> {
+        raw_bytes_new(size)
+    }
+
+    #[native_function(module = "std.bytes", export = "from_string", globals = ["__bytes_from_string"])]
+    pub fn __bytes_from_string(str_val: Value) -> Result<Value, String> {
+        raw_bytes_from_string(str_val)
+    }
+
+    #[native_function(module = "std.bytes", export = "from_array", globals = ["__bytes_from_array"])]
+    pub fn __bytes_from_array(arr: Value) -> Result<Value, String> {
+        raw_bytes_from_array(arr)
+    }
+
+    #[native_function(module = "std.bytes", export = "from_hex", globals = ["__bytes_from_hex"])]
+    pub fn __bytes_from_hex(hex_val: Value) -> Result<Value, String> {
+        raw_bytes_from_hex(hex_val)
+    }
+
+    #[native_function(module = "std.bytes", export = "len", globals = ["__bytes_len", "bytes_len"])]
+    pub fn __bytes_len(buf: Value) -> Result<Value, String> {
+        raw_bytes_len(buf)
+    }
+
+    #[native_function(exports = ["std.bytes.get", "std.bytes.get_u8"], globals = ["__bytes_get", "__bytes_get_u8", "bytes_get", "get", "get_u8"])]
+    pub fn __bytes_get(buf: Value, idx: Value) -> Result<Value, String> {
+        raw_bytes_get(buf, idx)
+    }
+
+    #[native_function(exports = ["std.bytes.set", "std.bytes.set_u8"], globals = ["__bytes_set", "__bytes_set_u8", "bytes_set", "set", "set_u8"])]
+    pub fn __bytes_set(buf: Value, idx: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set(buf, idx, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "push", globals = ["__bytes_push", "bytes_push", "push"])]
+    pub fn __bytes_push(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_push(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "extend", globals = ["__bytes_extend", "bytes_extend", "extend"])]
+    pub fn __bytes_extend(buf: Value, other: Value) -> Result<Value, String> {
+        raw_bytes_extend(buf, other)
+    }
+
+    #[native_function(module = "std.bytes", export = "slice", globals = ["__bytes_slice", "bytes_slice", "slice"])]
+    pub fn __bytes_slice(buf: Value, start: Value, end: Value) -> Result<Value, String> {
+        raw_bytes_slice(buf, start, end)
+    }
+
+    #[native_function(module = "std.bytes", export = "resize", globals = ["__bytes_resize", "bytes_resize", "resize"])]
+    pub fn __bytes_resize(buf: Value, new_len: Value, fill: Value) -> Result<Value, String> {
+        raw_bytes_resize(buf, new_len, fill)
+    }
+
+    #[native_function(module = "std.bytes", export = "fill", globals = ["__bytes_fill", "bytes_fill", "fill"])]
+    pub fn __bytes_fill(buf: Value, byte_val: Value) -> Result<Value, String> {
+        raw_bytes_fill(buf, byte_val)
+    }
+
+    #[native_function(module = "std.bytes", export = "to_string", globals = ["__bytes_to_string", "bytes_to_string", "to_string"])]
+    pub fn __bytes_to_string(buf: Value) -> Result<Value, String> {
+        raw_bytes_to_string(buf)
+    }
+
+    #[native_function(module = "std.bytes", export = "to_hex", globals = ["__bytes_to_hex", "bytes_to_hex", "to_hex"])]
+    pub fn __bytes_to_hex(buf: Value) -> Result<Value, String> {
+        raw_bytes_to_hex(buf)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u16_be", globals = ["__bytes_get_u16_be", "get_u16_be"])]
+    pub fn __bytes_get_u16_be(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u16_be(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u16_le", globals = ["__bytes_get_u16_le", "get_u16_le"])]
+    pub fn __bytes_get_u16_le(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u16_le(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u16_be", globals = ["__bytes_set_u16_be", "set_u16_be"])]
+    pub fn __bytes_set_u16_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u16_be(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u16_le", globals = ["__bytes_set_u16_le", "set_u16_le"])]
+    pub fn __bytes_set_u16_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u16_le(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u32_be", globals = ["__bytes_get_u32_be", "get_u32_be"])]
+    pub fn __bytes_get_u32_be(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u32_be(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u32_le", globals = ["__bytes_get_u32_le", "get_u32_le"])]
+    pub fn __bytes_get_u32_le(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u32_le(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u32_be", globals = ["__bytes_set_u32_be", "set_u32_be"])]
+    pub fn __bytes_set_u32_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u32_be(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u32_le", globals = ["__bytes_set_u32_le", "set_u32_le"])]
+    pub fn __bytes_set_u32_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u32_le(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u64_be", globals = ["__bytes_get_u64_be", "get_u64_be"])]
+    pub fn __bytes_get_u64_be(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u64_be(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "get_u64_le", globals = ["__bytes_get_u64_le", "get_u64_le"])]
+    pub fn __bytes_get_u64_le(buf: Value, offset: Value) -> Result<Value, String> {
+        raw_bytes_get_u64_le(buf, offset)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u64_be", globals = ["__bytes_set_u64_be", "set_u64_be"])]
+    pub fn __bytes_set_u64_be(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u64_be(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "set_u64_le", globals = ["__bytes_set_u64_le", "set_u64_le"])]
+    pub fn __bytes_set_u64_le(buf: Value, offset: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_set_u64_le(buf, offset, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u8", globals = ["__bytes_append_u8", "append_u8"])]
+    pub fn __bytes_append_u8(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u8(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u16_be", globals = ["__bytes_append_u16_be", "append_u16_be"])]
+    pub fn __bytes_append_u16_be(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u16_be(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u16_le", globals = ["__bytes_append_u16_le", "append_u16_le"])]
+    pub fn __bytes_append_u16_le(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u16_le(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u32_be", globals = ["__bytes_append_u32_be", "append_u32_be"])]
+    pub fn __bytes_append_u32_be(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u32_be(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u32_le", globals = ["__bytes_append_u32_le", "append_u32_le"])]
+    pub fn __bytes_append_u32_le(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u32_le(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u64_be", globals = ["__bytes_append_u64_be", "append_u64_be"])]
+    pub fn __bytes_append_u64_be(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u64_be(buf, val)
+    }
+
+    #[native_function(module = "std.bytes", export = "append_u64_le", globals = ["__bytes_append_u64_le", "append_u64_le"])]
+    pub fn __bytes_append_u64_le(buf: Value, val: Value) -> Result<Value, String> {
+        raw_bytes_append_u64_le(buf, val)
+    }
+
+    #[native_function(globals = ["__sha1", "sha1"])]
+    pub fn __sha1(val: Value) -> Result<Value, String> {
+        raw_sha1(val)
+    }
+
+    #[native_function(globals = ["__base64_encode", "base64_encode"])]
+    pub fn __base64_encode(val: Value) -> Result<Value, String> {
+        raw_base64_encode(val)
+    }
+
+    #[native_function(globals = ["__base64_decode", "base64_decode"])]
+    pub fn __base64_decode(val: Value) -> Result<Value, String> {
+        raw_base64_decode(val)
+    }
+
+    #[native_function(globals = ["__sec_websocket_accept", "sec_websocket_accept"])]
+    pub fn __sec_websocket_accept(key: Value) -> Result<Value, String> {
+        raw_sec_websocket_accept(key)
+    }
+
+    #[native_function(exports = ["std.tcp_connect", "std.net.tcp_connect"], globals = ["__net_tcp_connect", "tcp_connect"])]
+    pub fn __net_tcp_connect(addr: Value) -> Result<Value, String> {
+        raw_net_tcp_connect(addr)
+    }
+
+    #[native_function(exports = ["std.tls_connect", "std.net.tls_connect"], globals = ["__net_tls_connect", "tls_connect"])]
+    pub fn __net_tls_connect(host: Value, port: Value) -> Result<Value, String> {
+        raw_net_tls_connect(host, port)
+    }
+
+    #[native_function(exports = ["std.unix_connect", "std.net.unix_connect"], globals = ["__net_unix_connect"])]
+    pub fn __net_unix_connect(path: Value) -> Result<Value, String> {
+        raw_net_unix_connect(path)
+    }
+
+    #[native_function(exports = ["std.net_read", "std.net.read"], globals = ["__net_read", "net_read", "read"])]
+    pub fn __net_read(socket_id: Value, max_len: Value) -> Result<Value, String> {
+        raw_net_read(socket_id, max_len)
+    }
+
+    #[native_function(exports = ["std.net_write", "std.net.write"], globals = ["__net_write", "net_write", "write"])]
+    pub fn __net_write(socket_id: Value, data: Value) -> Result<Value, String> {
+        raw_net_write(socket_id, data)
+    }
+
+    #[native_function(exports = ["std.net_close", "std.net.close"], globals = ["__net_close", "net_close", "close"])]
+    pub fn __net_close(socket_id: Value) -> Result<Value, String> {
+        raw_net_close(socket_id)
+    }
+
+    #[native_function(exports = ["std.net_set_timeout", "std.net.set_timeout"], globals = ["__net_set_timeout", "net_set_timeout", "set_timeout"])]
+    pub fn __net_set_timeout(socket_id: Value, timeout_ms: Value) -> Result<Value, String> {
+        raw_net_set_timeout(socket_id, timeout_ms)
+    }
+
+    #[native_function(exports = ["std.net_set_nonblocking", "std.net.set_nonblocking"], globals = ["__net_set_nonblocking", "net_set_nonblocking", "set_nonblocking"])]
+    pub fn __net_set_nonblocking(socket_id: Value, nonblocking: Value) -> Result<Value, String> {
+        raw_net_set_nonblocking(socket_id, nonblocking)
+    }
+
+    #[native_function(exports = ["std.sleep", "std.sys.sleep"], globals = ["__sleep", "sleep"])]
+    pub fn __sleep(ms_val: Value) -> Result<Value, String> {
+        raw_sleep(ms_val)
+    }
 }
 
-#[native_function]
-pub fn sleep(ms_val: Value) -> Result<Value, String> {
-    raw_sleep(ms_val)
+pub use builtins::*;
+
+#[inline]
+pub fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = FxHasher::default();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Clone, Debug)]
+pub enum StdConstValue {
+    Int(i64),
+    Double(f64),
+    Bool(bool),
+    Str(&'static str),
+}
+
+impl StdConstValue {
+    pub fn to_value(&self) -> Value {
+        match self {
+            StdConstValue::Int(i) => Value::Int(*i),
+            StdConstValue::Double(d) => Value::Double(*d),
+            StdConstValue::Bool(b) => Value::Bool(*b),
+            StdConstValue::Str(s) => Value::String(Rc::new((*s).to_string())),
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct StdModuleSpec {
+    pub submodules: FxHashMap<&'static str, &'static str>,
+    pub natives: FxHashMap<&'static str, NativeFunction>,
+    pub constants: FxHashMap<&'static str, StdConstValue>,
+    pub overlay_asset: Option<&'static str>,
+}
+
+#[derive(Default, Clone)]
+pub struct StdRegistry {
+    pub modules: FxHashMap<&'static str, StdModuleSpec>,
+}
+
+impl StdRegistry {
+    fn ensure_module(&mut self, mod_path: &'static str) {
+        if !self.modules.contains_key(mod_path) {
+            self.modules.insert(mod_path, StdModuleSpec::default());
+        }
+        if let Some((parent, child)) = mod_path.rsplit_once('.') {
+            self.ensure_module(parent);
+            self.modules
+                .get_mut(parent)
+                .unwrap()
+                .submodules
+                .insert(child, mod_path);
+        }
+    }
+
+    pub fn insert_native(
+        &mut self,
+        mod_path: &'static str,
+        export_name: &'static str,
+        func: NativeFunction,
+    ) {
+        self.ensure_module(mod_path);
+        self.modules
+            .get_mut(mod_path)
+            .unwrap()
+            .natives
+            .insert(export_name, func);
+    }
+
+    pub fn insert_const(
+        &mut self,
+        mod_path: &'static str,
+        export_name: &'static str,
+        val: StdConstValue,
+    ) {
+        self.ensure_module(mod_path);
+        self.modules
+            .get_mut(mod_path)
+            .unwrap()
+            .constants
+            .insert(export_name, val);
+    }
+
+    pub fn set_overlay(&mut self, mod_path: &'static str, asset_path: &'static str) {
+        self.ensure_module(mod_path);
+        self.modules.get_mut(mod_path).unwrap().overlay_asset = Some(asset_path);
+    }
+
+    pub fn resolve_import(&self, source: &str) -> Option<&'static str> {
+        let rest = source.strip_prefix("@std")?.trim_start_matches('/');
+        if rest.is_empty() || rest == "std.pts" {
+            return self.modules.get_key_value("std").map(|(k, _)| *k);
+        }
+        let no_prefix = rest.strip_prefix("std/").unwrap_or(rest);
+        let clean = no_prefix.strip_suffix(".pts").unwrap_or(no_prefix);
+        let candidate = if clean == "std" {
+            "std".to_string()
+        } else {
+            format!("std.{}", clean.replace('/', "."))
+        };
+        self.modules.get_key_value(candidate.as_str()).map(|(k, _)| *k)
+    }
 }
 
 #[derive(Clone)]
@@ -2376,164 +2334,100 @@ pub struct StdModule {
     pub functions: Vec<NativeFunction>,
 }
 
-static CORE_FUNCTIONS: std::sync::LazyLock<Vec<NativeFunction>> = std::sync::LazyLock::new(|| {
-    vec![
-        println(),
-        print(),
-        __timestamp(),
-        __iter_of(),
-        __get_next(),
-        __has_next(),
-        __rand(),
-        __exec(),
-        __env(),
-        __joinStr(),
-        __math_sin(),
-        __math_cos(),
-        __math_floor(),
-        __math_pow(),
-        __str_len(),
-        __str_strip_prefix(),
-        __str_strip_suffix(),
-        strip_prefix(),
-        strip_suffix(),
-        __str_lower(),
-        __str_upper(),
-        __str_byte_at(),
-        __byte_rotate_left(),
-        __object_len(),
-        __result_is_ok(),
-        __result_is_err(),
-        __option_is_some(),
-        __option_is_none(),
-        __result_unwrap(),
-        __result_unwrap_or(),
-        __result_expect(),
-        __result_unwrap_err(),
-        __option_ok_or(),
-        __result_ok(),
-        __result_err(),
-        __option_some(),
-        __option_none(),
-        __bytes_new(),
-        __bytes_from_string(),
-        __bytes_from_array(),
-        __bytes_from_hex(),
-        __bytes_len(),
-        __bytes_get(),
-        __bytes_set(),
-        __bytes_push(),
-        __bytes_extend(),
-        __bytes_slice(),
-        __bytes_resize(),
-        __bytes_fill(),
-        __bytes_to_string(),
-        __bytes_to_hex(),
-        __bytes_get_u8(),
-        __bytes_set_u8(),
-        __bytes_get_u16_be(),
-        __bytes_get_u16_le(),
-        __bytes_set_u16_be(),
-        __bytes_set_u16_le(),
-        __bytes_get_u32_be(),
-        __bytes_get_u32_le(),
-        __bytes_set_u32_be(),
-        __bytes_set_u32_le(),
-        __bytes_get_u64_be(),
-        __bytes_get_u64_le(),
-        __bytes_set_u64_be(),
-        __bytes_set_u64_le(),
-        is_ok(),
-        is_err(),
-        is_some(),
-        is_none(),
-        unwrap(),
-        unwrap_or(),
-        expect(),
-        unwrap_err(),
-        ok_or(),
-        len(),
-        ok(),
-        err(),
-        some(),
-        none(),
-        bytes_new(),
-        bytes(),
-        bytes_len(),
-        bytes_get(),
-        bytes_set(),
-        bytes_push(),
-        bytes_extend(),
-        bytes_slice(),
-        bytes_resize(),
-        bytes_fill(),
-        bytes_to_string(),
-        bytes_to_hex(),
-        get_u8(),
-        set_u8(),
-        get_u16_be(),
-        get_u16_le(),
-        set_u16_be(),
-        set_u16_le(),
-        get_u32_be(),
-        get_u32_le(),
-        set_u32_be(),
-        set_u32_le(),
-        get_u64_be(),
-        get_u64_le(),
-        set_u64_be(),
-        set_u64_le(),
-        to_string(),
-        to_hex(),
-        slice(),
-        push(),
-        extend(),
-        fill(),
-        resize(),
-        get(),
-        set(),
-        __sha1(),
-        __base64_encode(),
-        __base64_decode(),
-        __sec_websocket_accept(),
-        sha1(),
-        base64_encode(),
-        base64_decode(),
-        sec_websocket_accept(),
-        __net_tcp_connect(),
-        __net_tls_connect(),
-        __net_unix_connect(),
-        __net_read(),
-        __net_write(),
-        __net_close(),
-        __net_set_timeout(),
-        __net_set_nonblocking(),
-        tcp_connect(),
-        tls_connect(),
-        net_read(),
-        read(),
-        net_write(),
-        write(),
-        net_close(),
-        close(),
-        net_set_timeout(),
-        set_timeout(),
-        net_set_nonblocking(),
-        set_nonblocking(),
-        join(),
-        strip_prefix(),
-        strip_suffix(),
-        lower(),
-        upper(),
-        byte_at(),
-        __sleep(),
-        sleep(),
-    ]
+static STD_DATA: LazyLock<(Vec<NativeFunction>, Vec<NativeFunction>, StdRegistry)> =
+    LazyLock::new(builtins::build_std_data);
+
+static CORE_NATIVE_MAP: LazyLock<FxHashMap<u64, NativeFunction>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
+    for f in &STD_DATA.1 {
+        map.insert(hash_str(f.name), f.clone());
+    }
+    map
 });
+
+static CORE_GLOBAL_MAP: LazyLock<FxHashMap<&'static str, NativeFunction>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
+    for f in &STD_DATA.0 {
+        map.insert(f.name, f.clone());
+    }
+    map
+});
+
+static CORE_ALL_BY_BYTES: LazyLock<FxHashMap<&'static [u8], NativeFunction>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
+    for f in &STD_DATA.1 {
+        map.insert(f.name.as_bytes(), f.clone());
+    }
+    map
+});
+
+pub fn std_registry() -> &'static StdRegistry {
+    &STD_DATA.2
+}
+
+pub fn core_native_map() -> &'static FxHashMap<u64, NativeFunction> {
+    &CORE_NATIVE_MAP
+}
+
+pub fn core_global_by_name(name: &str) -> Option<&'static NativeFunction> {
+    CORE_GLOBAL_MAP.get(name)
+}
+
+pub fn core_any_by_bytes(name_bytes: &[u8]) -> Option<&'static NativeFunction> {
+    CORE_ALL_BY_BYTES.get(name_bytes)
+}
+
+pub fn extra_natives_snapshot() -> Vec<NativeFunction> {
+    if let Some(extra) = EXTRA_NATIVES.get()
+        && let Ok(guard) = extra.lock()
+    {
+        return guard.clone();
+    }
+    Vec::new()
+}
+
+pub fn build_std_module_object(
+    mod_path: &str,
+    overlays: &FxHashMap<String, Value>,
+    cache: &mut FxHashMap<String, Value>,
+    eval_overlay: &mut impl FnMut(&Value) -> Result<Value, String>,
+) -> Result<Value, String> {
+    if let Some(existing) = cache.get(mod_path) {
+        return Ok(existing.clone());
+    }
+    let reg = std_registry();
+    let spec = reg
+        .modules
+        .get(mod_path)
+        .ok_or_else(|| format!("Unknown std module '{}'", mod_path))?;
+
+    let mut map = FxHashMap::default();
+    for (name, val) in &spec.constants {
+        map.insert(hash_str(name), val.to_value());
+    }
+    for (name, func) in &spec.natives {
+        map.insert(hash_str(name), Value::NativeFun(func.clone()));
+    }
+    for (sub_name, sub_path) in &spec.submodules {
+        let sub_val = build_std_module_object(sub_path, overlays, cache, eval_overlay)?;
+        map.insert(hash_str(sub_name), sub_val);
+    }
+    if let Some(overlay_fun) = overlays.get(mod_path) {
+        let overlay_val = eval_overlay(overlay_fun)?;
+        if let Value::Object(obj_ref) = overlay_val {
+            for (k, v) in obj_ref.borrow().iter() {
+                map.insert(*k, v.clone());
+            }
+        }
+    }
+    let obj = Value::Object(Rc::new(RefCell::new(map)));
+    cache.insert(mod_path.to_string(), obj.clone());
+    Ok(obj)
+}
 
 impl StdModule {
     pub fn get_core() -> Self {
-        let mut functions = CORE_FUNCTIONS.clone();
+        let mut functions = STD_DATA.0.clone();
         if let Some(extra) = EXTRA_NATIVES.get()
             && let Ok(guard) = extra.lock()
         {

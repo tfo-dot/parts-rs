@@ -299,4 +299,90 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0], b);
     }
+
+    #[test]
+    fn test_bytes_append_endianness_and_offsets() {
+        let engine = Engine::new();
+        let source = r#"
+            let std = import `@std/std.pts`;
+            let buf = std.bytes.new(0).unwrap();
+
+            buf.append_u8(17).unwrap();
+            buf.append_u16_be(8080).unwrap();
+            buf.append_u16_le(8080).unwrap();
+            buf.append_u32_be(305419896).unwrap();
+            buf.append_u32_le(305419896).unwrap();
+            buf.append_u64_be(1700000000000).unwrap();
+            buf.append_u64_le(1700000000000).unwrap();
+
+            "Total length: 1 + 2 + 2 + 4 + 4 + 8 + 8 = 29"
+            if (buf.len() == 29) == false { return 0; }
+
+            let r_u8 = buf.get_u8(0).unwrap();
+            let r_u16_be = buf.get_u16_be(1).unwrap();
+            let r_u16_le = buf.get_u16_le(3).unwrap();
+            let r_u32_be = buf.get_u32_be(5).unwrap();
+            let r_u32_le = buf.get_u32_le(9).unwrap();
+            let r_u64_be = buf.get_u64_be(13).unwrap();
+            let r_u64_le = buf.get_u64_le(21).unwrap();
+
+            let check_vals = (r_u8 == 17)
+                & (r_u16_be == 8080)
+                & (r_u16_le == 8080)
+                & (r_u32_be == 305419896)
+                & (r_u32_le == 305419896)
+                & (r_u64_be == 1700000000000)
+                & (r_u64_le == 1700000000000);
+
+            if check_vals { return 1; } else { return 0; }
+        "#;
+        let result = engine.execute(source).unwrap();
+        assert_eq!(result, Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn test_bytes_append_via_std_module_and_negatives() {
+        let engine = Engine::new();
+        let source = r#"
+            let std = import `@std/std.pts`;
+            let buf = std.bytes.new(0).unwrap();
+
+            std.bytes.append_u16_be(buf, 0 - 1).unwrap();
+            std.bytes.append_u32_le(buf, 0 - 2).unwrap();
+
+            "-1 as u16 is 0xFFFF (65535)"
+            let v16 = buf.get_u16_be(0).unwrap();
+            "-2 as u32 is 0xFFFFFFFE (4294967294)"
+            let v32 = buf.get_u32_le(2).unwrap();
+
+            if (v16 == 65535) & (v32 == 4294967294) {
+                return 1;
+            } else {
+                return 0;
+            }
+        "#;
+        let result = engine.execute(source).unwrap();
+        assert_eq!(result, Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn test_bytes_append_error_on_invalid_types() {
+        let engine = Engine::new();
+        let source = r#"
+            let std = import `@std/std.pts`;
+            let not_bytes = "not a buffer";
+            let res1 = std.bytes.append_u16_be(not_bytes, 100);
+
+            let buf = std.bytes.new(0).unwrap();
+            let res2 = std.bytes.append_u16_be(buf, "not an int");
+
+            if res1.is_err() & res2.is_err() {
+                return 1;
+            } else {
+                return 0;
+            }
+        "#;
+        let result = engine.execute(source).unwrap();
+        assert_eq!(result, Some(Value::Int(1)));
+    }
 }

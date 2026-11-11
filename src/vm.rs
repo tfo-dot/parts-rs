@@ -1,5 +1,4 @@
 use crate::emitter::OpCode;
-use crate::std::StdModule;
 use crate::value::{NativeFunction, Value};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -59,8 +58,9 @@ pub struct VM {
     pub constants: Vec<Value>,
     exit_value: Option<Value>,
     pub patch_table: FxHashMap<u64, FxHashMap<u64, Value>>,
-    pub native_functions: Vec<NativeFunction>,
-    pub native_map: FxHashMap<u64, NativeFunction>,
+    pub extra_native_functions: Vec<NativeFunction>,
+    pub extra_native_map: FxHashMap<u64, NativeFunction>,
+    pub std_module_cache: FxHashMap<String, Value>,
     pub source_map: Option<Rc<Vec<(usize, usize, usize)>>>,
 }
 
@@ -81,15 +81,9 @@ impl VM {
             constants,
             exit_value: None,
             patch_table: FxHashMap::default(),
-            native_map: StdModule::get_core()
-                .functions
-                .into_iter()
-                .map(|f| {
-                    let hash = Value::String(f.name.to_string().into()).get_hash();
-                    (hash, f)
-                })
-                .collect(),
-            native_functions: StdModule::get_core().functions,
+            extra_native_map: FxHashMap::default(),
+            extra_native_functions: Vec::new(),
+            std_module_cache: FxHashMap::default(),
             source_map: None,
         }
     }
@@ -101,9 +95,9 @@ impl VM {
     ) -> Self {
         let mut vm = Self::new(code, constants);
         for f in natives {
-            let hash = Value::String(f.name.to_string().into()).get_hash();
-            vm.native_map.insert(hash, f.clone());
-            vm.native_functions.push(f);
+            let hash = crate::std::hash_str(f.name);
+            vm.extra_native_map.insert(hash, f.clone());
+            vm.extra_native_functions.push(f);
         }
         vm.source_map = None;
         vm
@@ -127,16 +121,43 @@ impl VM {
             constants,
             exit_value: None,
             patch_table: FxHashMap::default(),
-            native_map: StdModule::get_core()
-                .functions
-                .into_iter()
-                .map(|f| {
-                    let hash = Value::String(f.name.to_string().into()).get_hash();
-                    (hash, f)
-                })
-                .collect(),
-            native_functions: StdModule::get_core().functions,
+            extra_native_map: FxHashMap::default(),
+            extra_native_functions: Vec::new(),
+            std_module_cache: FxHashMap::default(),
             source_map: None,
+        }
+    }
+
+    #[inline]
+    fn find_native(&self, hash: u64) -> Option<&NativeFunction> {
+        if !self.extra_native_map.is_empty()
+            && let Some(f) = self.extra_native_map.get(&hash)
+        {
+            return Some(f);
+        }
+        crate::std::core_native_map().get(&hash)
+    }
+
+    fn eval_standalone_fun(&mut self, fun: &crate::value::Function) -> Result<Value, Error> {
+        let saved_frames = std::mem::take(&mut self.frames);
+        let saved_exit = self.exit_value.take();
+        let fp = self.stack.len();
+        let frame_size = fun.frame_size as usize;
+        self.stack.resize(fp + frame_size, Value::Int(0));
+        self.frames.push(Frame {
+            pointer: fp,
+            ip: 0,
+            bytecode: Rc::clone(&fun.code),
+            return_reg: 0,
+        });
+        let res = self.run();
+        self.stack.truncate(fp);
+        self.frames = saved_frames;
+        self.exit_value = saved_exit;
+        match res {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Ok(Value::Bool(false)),
+            Err(e) => Err(e),
         }
     }
     pub fn lookup_source_location(&self, ip: usize) -> Option<(usize, usize)> {
@@ -649,7 +670,7 @@ impl VM {
                         Value::EnumField { args, .. } => {
                             if let Some((_, val)) = args.iter().find(|(h, _)| *h == hash) {
                                 Some(val.clone())
-                            } else if let Some(native_fn) = self.native_map.get(&hash) {
+                            } else if let Some(native_fn) = self.find_native(hash) {
                                 let receiver = self.stack[fp + src_idx].clone();
                                 Some(Value::BoundMethod {
                                     receiver: Box::new(receiver),
@@ -660,8 +681,8 @@ impl VM {
                             }
                         }
                         _ => {
-                            if let Some(native_fn) = self.native_map.get(&hash) {
-                                let receiver = self.stack[fp + src_idx].clone();
+                            let receiver = self.stack[fp + src_idx].clone();
+                            if let Some(native_fn) = self.find_native(hash) {
                                 Some(Value::BoundMethod {
                                     receiver: Box::new(receiver),
                                     method: native_fn.clone(),
@@ -751,7 +772,7 @@ impl VM {
                         Value::EnumField { args, .. } => {
                             if let Some((_, val)) = args.iter().find(|(h, _)| *h == runtime_hash) {
                                 val.clone()
-                            } else if let Some(native_fn) = self.native_map.get(&runtime_hash) {
+                            } else if let Some(native_fn) = self.find_native(runtime_hash) {
                                 let receiver = self.stack[fp + obj_reg].clone();
                                 Value::BoundMethod {
                                     receiver: Box::new(receiver),
@@ -777,8 +798,8 @@ impl VM {
                             Value::Int(b[index as usize] as i64)
                         }
                         _ => {
-                            if let Some(native_fn) = self.native_map.get(&runtime_hash) {
-                                let receiver = self.stack[fp + obj_reg].clone();
+                            let receiver = self.stack[fp + obj_reg].clone();
+                            if let Some(native_fn) = self.find_native(runtime_hash) {
                                 Value::BoundMethod {
                                     receiver: Box::new(receiver),
                                     method: native_fn.clone(),
@@ -801,19 +822,118 @@ impl VM {
                         Some(Value::Hash(h)) => *h,
                         _ => panic!("Expected hash constant"),
                     };
-                    let found = match self.native_map.get(&hash_val) {
+                    let found = match self.find_native(hash_val) {
                         Some(f) => f.clone(),
                         None => self
-                            .native_functions
+                            .extra_native_functions
                             .iter()
-                            .find(|f| {
-                                Value::Hash(Value::String(f.name.to_string().into()).get_hash())
-                                    == Value::Hash(hash_val)
-                            })
+                            .find(|f| crate::std::hash_str(f.name) == hash_val)
                             .expect("Native function not found")
                             .clone(),
                     };
                     self.stack[fp + dest] = Value::NativeFun(found);
+                }
+                0x29 => {
+                    // CallNative
+                    let dest_reg = code[ip];
+                    let const_idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
+                    let arg_count = code[ip + 3] as usize;
+                    ip += 4;
+
+                    let (fn_name, call_res) =
+                        if let Value::NativeFun(native_fn) = &self.constants[const_idx] {
+                            let fn_name = native_fn.name;
+                            let res = if arg_count <= 8 {
+                                let mut small_args = [const { Value::Int(0) }; 8];
+                                for slot in small_args.iter_mut().take(arg_count) {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    *slot = self.stack[fp + arg_reg].clone();
+                                }
+                                self.frames[frame_idx].ip = ip;
+                                (native_fn.call)(&small_args[..arg_count])
+                            } else {
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count {
+                                    let arg_reg = code[ip] as usize;
+                                    ip += 1;
+                                    args.push(self.stack[fp + arg_reg].clone());
+                                }
+                                self.frames[frame_idx].ip = ip;
+                                (native_fn.call)(&args)
+                            };
+                            (fn_name, res)
+                        } else {
+                            return Err(Error::UnexpectedTypeCall);
+                        };
+
+                    let result = call_res.map_err(|e| {
+                        let loc_info = match self.lookup_source_location(ip) {
+                            Some((l, c)) => format!("at line {}:{} (IP: {})", l, c, ip),
+                            None => format!("IP: {}", ip),
+                        };
+                        Error::NativeFunctionFailed(format!(
+                            "Error in native function '{}': {}, {}",
+                            fn_name, e, loc_info
+                        ))
+                    })?;
+
+                    self.stack[fp + dest_reg as usize] = result;
+                }
+                0x2A => {
+                    // LoadStdModule
+                    let dest_reg = code[ip] as usize;
+                    let path_idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
+                    let overlay_idx = u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                    ip += 5;
+
+                    let mod_path = match &self.constants[path_idx] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(Error::UnexpectedType),
+                    };
+
+                    if let Some(cached) = self.std_module_cache.get(mod_path.as_str()) {
+                        self.stack[fp + dest_reg] = cached.clone();
+                    } else {
+                        let mut overlays = FxHashMap::default();
+                        if overlay_idx != u16::MAX as usize {
+                            match &self.constants[overlay_idx] {
+                                Value::Fun(_) => {
+                                    overlays.insert(
+                                        mod_path.to_string(),
+                                        self.constants[overlay_idx].clone(),
+                                    );
+                                }
+                                Value::Object(obj_ref) => {
+                                    let reg = crate::std::std_registry();
+                                    for sub_path in reg.modules.keys() {
+                                        if let Some(v) =
+                                            obj_ref.borrow().get(&crate::std::hash_str(sub_path))
+                                        {
+                                            overlays.insert((*sub_path).to_string(), v.clone());
+                                        }
+                                    }
+                                }
+                                _ => return Err(Error::UnexpectedType),
+                            }
+                        }
+                        self.frames[frame_idx].ip = ip;
+                        let mut cache = std::mem::take(&mut self.std_module_cache);
+                        let obj_res = crate::std::build_std_module_object(
+                            &mod_path,
+                            &overlays,
+                            &mut cache,
+                            &mut |val| match val {
+                                Value::Fun(fun) => {
+                                    self.eval_standalone_fun(fun).map_err(|e| e.to_string())
+                                }
+                                _ => Err("Invalid std overlay initializer".to_string()),
+                            },
+                        );
+                        self.std_module_cache = cache;
+                        let obj_val = obj_res.map_err(Error::NativeFunctionFailed)?;
+                        self.stack[fp + dest_reg] = obj_val;
+                    }
                 }
                 0x26 => {
                     // LoadGlobal

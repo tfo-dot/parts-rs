@@ -187,6 +187,53 @@ fn disassemble_instruction(code: &[u8], offset: usize, constants: &[Value]) -> u
             );
             offset + 4
         }
+        OpCode::CallNative => {
+            if offset + 5 > code.len() {
+                println!("{:-12} (truncated)", "CALL_NATIVE");
+                return code.len();
+            }
+            let ret = code[offset + 1];
+            let idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
+            let args_count = code[offset + 4] as usize;
+            if offset + 5 + args_count > code.len() {
+                println!(
+                    "{:-12} RetReg: {:<3} NativeIdx: {} (truncated args)",
+                    "CALL_NATIVE", ret, idx
+                );
+                return code.len();
+            }
+            let args: Vec<u8> = (0..args_count).map(|i| code[offset + 5 + i]).collect();
+            println!(
+                "{:-12} RetReg: {:<3} NativeIdx: {} ({}) Args: {:?}",
+                "CALL_NATIVE",
+                ret,
+                idx,
+                constants.get(idx).map(|v| v.to_string()).unwrap_or_default(),
+                args
+            );
+            offset + 5 + args_count
+        }
+        OpCode::LoadStdModule => {
+            if offset + 6 > code.len() {
+                println!("{:-12} (truncated)", "LOAD_STD_MOD");
+                return code.len();
+            }
+            let reg = code[offset + 1];
+            let path_idx = u16::from_le_bytes([code[offset + 2], code[offset + 3]]) as usize;
+            let overlay_idx = u16::from_le_bytes([code[offset + 4], code[offset + 5]]);
+            println!(
+                "{:-12} Reg: {:<3} PathIdx: {} ({}) OverlayIdx: {}",
+                "LOAD_STD_MOD",
+                reg,
+                path_idx,
+                constants
+                    .get(path_idx)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                overlay_idx
+            );
+            offset + 6
+        }
         OpCode::Binary => {
             if offset + 5 > code.len() {
                 println!("{:-12} (truncated)", "BINARY");

@@ -1,13 +1,13 @@
 use crate::emitter::Emitter;
 pub use crate::emitter::IrOp;
-use crate::optimize::IrOptimizer;
+use crate::optimize::{AstOptimizer, IrOptimizer};
 use crate::parser::BinaryOperator;
 use crate::parser::EnumVariant;
 use crate::parser::ImportType;
 use crate::parser::Parser;
 use crate::parser::Value as ParserValue;
-use crate::value::{Function, NativeFunction, StdDefinition, Value};
-use rustc_hash::FxHashMap;
+use crate::value::{Function, NativeFunction, Value};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
@@ -19,6 +19,12 @@ use crate::parser::Ast;
 static STD_AST_CACHE: LazyLock<Mutex<FxHashMap<String, Vec<Ast>>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
+enum StdTarget {
+    Module(&'static str),
+    Native(NativeFunction),
+    Const(crate::std::StdConstValue),
+    PartsFun(usize),
+}
 #[derive(Clone, Debug)]
 pub struct Error {
     pub line: usize,
@@ -83,7 +89,9 @@ struct Context {
     ir_buff: Vec<IrOp>,
 
     scopes: Vec<FxHashMap<String, u8>>,
+    module_aliases: Vec<FxHashMap<String, Option<String>>>,
     top_level_names: FxHashMap<String, u8>,
+    top_level_module_aliases: FxHashMap<String, String>,
     next_free_register: u8,
 
     loop_stack: Vec<LoopContext>,
@@ -95,8 +103,10 @@ impl Context {
     fn new() -> Self {
         Self {
             scopes: vec![FxHashMap::default()],
+            module_aliases: vec![FxHashMap::default()],
             scope_bases: vec![0],
             top_level_names: FxHashMap::default(),
+            top_level_module_aliases: FxHashMap::default(),
             next_free_register: 0,
             loop_stack: vec![],
             local_count: 0,
@@ -115,13 +125,43 @@ impl Context {
         None
     }
 
+    fn resolve_local_module_alias(&self, name: &str) -> Option<&str> {
+        for scope in self.module_aliases.iter().rev() {
+            if let Some(entry) = scope.get(name) {
+                return entry.as_deref();
+            }
+        }
+        None
+    }
+
+    fn set_module_alias(&mut self, name: String, mod_path: String) {
+        if self.scopes.len() == 1 {
+            self.top_level_module_aliases
+                .insert(name.clone(), mod_path.clone());
+        }
+        if let Some(current) = self.module_aliases.last_mut() {
+            current.insert(name, Some(mod_path));
+        }
+    }
+
+    fn clear_module_alias(&mut self, name: &str) {
+        if self.scopes.len() == 1 {
+            self.top_level_module_aliases.remove(name);
+        }
+        if let Some(current) = self.module_aliases.last_mut() {
+            current.insert(name.to_string(), None);
+        }
+    }
+
     fn begin_scope(&mut self) {
         self.scopes.push(FxHashMap::default());
+        self.module_aliases.push(FxHashMap::default());
         self.scope_bases.push(self.local_count);
     }
 
     fn end_scope(&mut self) {
         self.scopes.pop();
+        self.module_aliases.pop();
         if let Some(base) = self.scope_bases.pop() {
             self.local_count = base;
             self.next_free_register = base;
@@ -153,7 +193,7 @@ pub struct Compiler {
     constant_map: FxHashMap<Value, usize>,
     pub enums: Vec<EnumDef>,
     contexts: Vec<Context>,
-    std: StdDefinition,
+    extra_natives: FxHashMap<String, NativeFunction>,
     source: PathBuf,
     next_label_id: usize,
     pub optimize: bool,
@@ -161,6 +201,10 @@ pub struct Compiler {
     pub current_line: usize,
     pub current_col: usize,
     pub module_variables: rustc_hash::FxHashSet<String>,
+    mutated_vars: FxHashSet<String>,
+    any_std_field_mutated: bool,
+    compiled_std_overlays: FxHashMap<String, usize>,
+    compiled_std_overlay_exports: FxHashMap<(String, String), usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -178,7 +222,7 @@ impl Compiler {
             constant_map: FxHashMap::default(),
             errors: vec![],
             had_error: false,
-            std: StdDefinition::get_core(),
+            extra_natives: FxHashMap::default(),
             next_label_id: 0,
             source,
             enums: vec![],
@@ -187,6 +231,10 @@ impl Compiler {
             current_line: 0,
             current_col: 0,
             module_variables: rustc_hash::FxHashSet::default(),
+            mutated_vars: FxHashSet::default(),
+            any_std_field_mutated: false,
+            compiled_std_overlays: FxHashMap::default(),
+            compiled_std_overlay_exports: FxHashMap::default(),
         };
         compiler.enums.push(EnumDef {
             name: "Result".to_string(),
@@ -223,8 +271,367 @@ impl Compiler {
 
     pub fn with_natives(source: PathBuf, natives: Vec<NativeFunction>) -> Self {
         let mut compiler = Self::new(source);
-        compiler.std.functions.extend(natives);
+        for n in natives {
+            compiler.extra_natives.insert(n.name.to_string(), n);
+        }
         compiler
+    }
+
+    fn lookup_global_native(&self, name: &str) -> Option<&NativeFunction> {
+        self.extra_natives
+            .get(name)
+            .or_else(|| crate::std::core_global_by_name(name))
+    }
+
+    fn collect_mutated_vars(&mut self, nodes: &[Ast]) {
+        for node in nodes {
+            self.collect_mutated_node(node);
+        }
+    }
+
+    fn collect_mutated_node(&mut self, node: &Ast) {
+        match node {
+            Ast::Declare { value, .. } | Ast::Return { value } => {
+                self.collect_mutated_node(value);
+            }
+            Ast::Set { name, value } => {
+                match &**name {
+                    Ast::Value(ParserValue::Ref(var)) => {
+                        self.mutated_vars.insert(var.clone());
+                    }
+                    Ast::Dot { .. } => {
+                        let mut cur = &**name;
+                        while let Ast::Dot { accessor, .. } = cur {
+                            cur = accessor;
+                        }
+                        if let Ast::Value(ParserValue::Ref(root)) = cur {
+                            self.mutated_vars.insert(root.clone());
+                        }
+                        self.any_std_field_mutated = true;
+                    }
+                    _ => {}
+                }
+                self.collect_mutated_node(name);
+                self.collect_mutated_node(value);
+            }
+            Ast::Block { code } => {
+                for item in code {
+                    self.collect_mutated_node(item);
+                }
+            }
+            Ast::Call { what, args } => {
+                self.collect_mutated_node(what);
+                for a in args {
+                    self.collect_mutated_node(a);
+                }
+            }
+            Ast::Binary { left, right, .. } => {
+                self.collect_mutated_node(left);
+                self.collect_mutated_node(right);
+            }
+            Ast::If {
+                then_branch,
+                else_branch,
+                condition,
+            } => {
+                self.collect_mutated_node(condition);
+                self.collect_mutated_node(then_branch);
+                if let Some(e) = else_branch {
+                    self.collect_mutated_node(e);
+                }
+            }
+            Ast::For { condition, body } => {
+                self.collect_mutated_node(condition);
+                self.collect_mutated_node(body);
+            }
+            Ast::ForEach { iterable, body, .. } => {
+                self.collect_mutated_node(iterable);
+                self.collect_mutated_node(body);
+            }
+            Ast::Dot {
+                accessor, access, ..
+            } => {
+                self.collect_mutated_node(accessor);
+                self.collect_mutated_node(access);
+            }
+            Ast::Object(pairs) => {
+                for (k, v) in pairs {
+                    self.collect_mutated_node(k);
+                    self.collect_mutated_node(v);
+                }
+            }
+            Ast::Match { target, arms } => {
+                self.collect_mutated_node(target);
+                for arm in arms {
+                    self.collect_mutated_node(&arm.body);
+                }
+            }
+            Ast::Value(ParserValue::Fun { body, .. }) => {
+                self.collect_mutated_node(body);
+            }
+            Ast::Value(ParserValue::EnumField { fields, .. }) => {
+                for f in fields {
+                    self.collect_mutated_node(f);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn load_std_ast(&mut self, asset_path: &str) -> Option<Vec<Ast>> {
+        {
+            let cache = STD_AST_CACHE.lock().unwrap();
+            if let Some(cached) = cache.get(asset_path) {
+                return Some(cached.clone());
+            }
+        }
+        let file = crate::Assets::get(asset_path)?;
+        let content =
+            String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
+        let mut p = Parser::new(content);
+        let mut ast = match p.parse_all() {
+            Ok(ast) => ast,
+            Err(e) => {
+                self.error(
+                    0,
+                    0,
+                    format!("syntax error in std module '{}': {}", asset_path, e),
+                );
+                return None;
+            }
+        };
+        let mut opt = AstOptimizer::new();
+        opt.collect_all(&ast);
+        let mut changed = true;
+        while changed {
+            changed = opt.optimize_all(&mut ast);
+        }
+        STD_AST_CACHE
+            .lock()
+            .unwrap()
+            .insert(asset_path.to_string(), ast.clone());
+        Some(ast)
+    }
+
+    fn compile_ast_as_fun(&mut self, ast: Vec<Ast>) -> usize {
+        let mut mod_ctx = Context::new();
+        for item in &ast {
+            if let Ast::Declare { name, .. } = item {
+                let reg = mod_ctx.add_local(name.clone());
+                mod_ctx.top_level_names.insert(name.clone(), reg);
+            }
+        }
+        self.contexts.push(mod_ctx);
+        for item in ast {
+            self.compile(item);
+            self.current().next_free_register = self.current().local_count;
+        }
+        let ctx = self.contexts.pop().expect("Empty contexts");
+        let fun_ir = if self.optimize {
+            IrOptimizer::optimize(ctx.ir_buff)
+        } else {
+            ctx.ir_buff
+        };
+        let frame_size = IrOp::compute_frame_size(0, &fun_ir);
+        let code = Emitter {}.emit(fun_ir);
+        let fun = Value::Fun(Rc::new(Function {
+            arity: 0,
+            frame_size,
+            code: code.into(),
+        }));
+        self.get_or_add_constant(fun)
+    }
+
+    fn compile_std_overlay(&mut self, mod_path: &str, asset_path: &str) -> Option<usize> {
+        if let Some(&idx) = self.compiled_std_overlays.get(mod_path) {
+            return Some(idx);
+        }
+        let ast = self.load_std_ast(asset_path)?;
+        let fun_idx = self.compile_ast_as_fun(ast);
+        self.compiled_std_overlays
+            .insert(mod_path.to_string(), fun_idx);
+        Some(fun_idx)
+    }
+
+    fn try_extract_overlay_fun(
+        &mut self,
+        mod_path: &str,
+        asset_path: &str,
+        member_name: &str,
+    ) -> Option<usize> {
+        let key = (mod_path.to_string(), member_name.to_string());
+        if let Some(&idx) = self.compiled_std_overlay_exports.get(&key) {
+            return Some(idx);
+        }
+        let ast = self.load_std_ast(asset_path)?;
+        let mut meaningful = ast.iter().filter(|node| {
+            !matches!(
+                node,
+                Ast::Ignore | Ast::Value(ParserValue::String(_))
+            )
+        });
+        let first = meaningful.next()?;
+        if meaningful.next().is_some() {
+            return None;
+        }
+        if let Ast::Return { value } = first
+            && let Ast::Object(entries) = &**value
+        {
+            for (k_ast, v_ast) in entries {
+                let matches_key = match k_ast {
+                    Ast::Value(ParserValue::Ref(k)) | Ast::Value(ParserValue::String(k)) => {
+                        k == member_name
+                    }
+                    _ => false,
+                };
+                if matches_key
+                    && let Ast::Value(ParserValue::Fun { args, body }) = v_ast
+                {
+                    let fun_val = self.convert_const(ParserValue::Fun {
+                        args: args.clone(),
+                        body: body.clone(),
+                    });
+                    let idx = self.get_or_add_constant(fun_val);
+                    self.compiled_std_overlay_exports.insert(key, idx);
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
+    fn emit_load_std_module(&mut self, dest: u8, mod_path: &'static str) {
+        let reg = crate::std::std_registry();
+        let path_idx = self.get_or_add_constant(Value::String(Rc::new(mod_path.to_string())));
+        let overlay_idx = if mod_path == "std" {
+            let mut bundle = FxHashMap::default();
+            for (&sub_path, spec) in &reg.modules {
+                if let Some(asset) = spec.overlay_asset
+                    && let Some(fun_idx) = self.compile_std_overlay(sub_path, asset)
+                {
+                    let fun_val = self.constant_pool[fun_idx].clone();
+                    bundle.insert(crate::std::hash_str(sub_path), fun_val);
+                }
+            }
+            if bundle.is_empty() {
+                u16::MAX as usize
+            } else {
+                self.get_or_add_constant(Value::Object(Rc::new(RefCell::new(bundle))))
+            }
+        } else if let Some(spec) = reg.modules.get(mod_path) {
+            if let Some(asset) = spec.overlay_asset {
+                self.compile_std_overlay(mod_path, asset)
+                    .unwrap_or(u16::MAX as usize)
+            } else {
+                u16::MAX as usize
+            }
+        } else {
+            u16::MAX as usize
+        };
+        self.add_inst(IrOp::LoadStdModule {
+            dest,
+            path_idx,
+            overlay_idx,
+        });
+    }
+
+    fn resolve_module_alias(&mut self, name: &str) -> Option<&'static str> {
+        if self.any_std_field_mutated || self.mutated_vars.contains(name) {
+            return None;
+        }
+        if self.current().resolve_local(name).is_some() {
+            let mod_name = self.current().resolve_local_module_alias(name)?;
+            return crate::std::std_registry()
+                .modules
+                .get_key_value(mod_name)
+                .map(|(k, _)| *k);
+        }
+        if let Some(mod_name) = self.current().resolve_local_module_alias(name) {
+            return crate::std::std_registry()
+                .modules
+                .get_key_value(mod_name)
+                .map(|(k, _)| *k);
+        }
+        for ctx in self.contexts.iter().rev().skip(1) {
+            if let Some(mod_name) = ctx.top_level_module_aliases.get(name) {
+                return crate::std::std_registry()
+                    .modules
+                    .get_key_value(mod_name.as_str())
+                    .map(|(k, _)| *k);
+            }
+            if ctx.top_level_names.contains_key(name) {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn resolve_std_target(&mut self, ast: &Ast) -> Option<StdTarget> {
+        let mut segments: Vec<&str> = Vec::new();
+        let mut cur = ast;
+        while let Ast::Dot {
+            accessor,
+            access,
+            resolve: false,
+        } = cur
+        {
+            if let Ast::Value(ParserValue::Ref(prop)) = &**access {
+                segments.push(prop.as_str());
+                cur = accessor;
+            } else {
+                return None;
+            }
+        }
+        let base_name = match cur {
+            Ast::Value(ParserValue::Ref(name)) => name.as_str(),
+            _ => return None,
+        };
+        let mut current_mod = self.resolve_module_alias(base_name)?;
+        if segments.is_empty() {
+            return Some(StdTarget::Module(current_mod));
+        }
+        segments.reverse();
+        let reg = crate::std::std_registry();
+        for (i, &seg) in segments.iter().enumerate() {
+            let spec = reg.modules.get(current_mod)?;
+            let is_last = i + 1 == segments.len();
+            if let Some(&sub_mod) = spec.submodules.get(seg) {
+                current_mod = sub_mod;
+                if is_last {
+                    return Some(StdTarget::Module(current_mod));
+                }
+                continue;
+            }
+            if is_last {
+                if let Some(native_fn) = spec.natives.get(seg) {
+                    return Some(StdTarget::Native(native_fn.clone()));
+                }
+                if let Some(const_val) = spec.constants.get(seg) {
+                    return Some(StdTarget::Const(const_val.clone()));
+                }
+                if let Some(asset) = spec.overlay_asset
+                    && let Some(fun_idx) = self.try_extract_overlay_fun(current_mod, asset, seg)
+                {
+                    return Some(StdTarget::PartsFun(fun_idx));
+                }
+            }
+            return None;
+        }
+        None
+    }
+
+    fn emit_std_const(&mut self, dest: u8, val: crate::std::StdConstValue) {
+        match val {
+            crate::std::StdConstValue::Int(i) => self.add_inst(IrOp::LoadInt { dest, val: i }),
+            crate::std::StdConstValue::Double(d) => {
+                self.add_inst(IrOp::LoadDouble { dest, val: d })
+            }
+            crate::std::StdConstValue::Bool(b) => self.add_inst(IrOp::LoadBool { dest, val: b }),
+            crate::std::StdConstValue::Str(s) => {
+                let idx = self.get_or_add_constant(Value::String(Rc::new(s.to_string())));
+                self.add_inst(IrOp::LoadConst { dest, idx });
+            }
+        }
     }
     pub fn set_source_text(&mut self, text: &str) {
         self.source_lines = Some(text.lines().map(|s| s.to_string()).collect());
@@ -317,103 +724,51 @@ impl Compiler {
     }
 
     fn compile_module(&mut self, source: String) -> Value {
-        let is_std = source.starts_with("@std/") || self.source.starts_with("@std");
-        let (raw_source, new_source_path, internal_path_opt) = if is_std {
-            let virtual_path = if let Some(stripped) = source.strip_prefix("@std/") {
-                PathBuf::from(stripped)
-            } else {
-                self.source.join(&source)
-            };
-
-            let mut internal_path = virtual_path.clone();
-            if internal_path.starts_with("@std") {
-                internal_path = internal_path.strip_prefix("@std").unwrap().to_path_buf();
-            }
-
-            let internal_path_str = internal_path.to_str().unwrap().trim_start_matches('/');
-
-            let file = crate::Assets::get(internal_path_str).unwrap_or_else(|| {
-                panic!(
-                    "Standard library module not found: {} (original: {})",
-                    internal_path_str, source
-                )
-            });
-            let content =
-                String::from_utf8(file.data.to_vec()).expect("Invalid UTF-8 in embedded asset");
-
-            (
-                content,
-                PathBuf::from("@std")
-                    .join(internal_path_str)
-                    .parent()
-                    .unwrap()
-                    .to_path_buf(),
-                Some(internal_path_str.to_string()),
-            )
-        } else {
-            let full_path = self.source.join(&source);
-            let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
-            let path_str = canonical_path.to_str().unwrap().to_string();
-            let content = match fs::read_to_string(&canonical_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
-                    return Value::Fun(Rc::new(Function {
-                        arity: 0,
-                        frame_size: 1,
-                        code: Rc::from([]),
-                    }));
-                }
-            };
-            (
-                content,
-                canonical_path.parent().unwrap().to_path_buf(),
-                None,
-            )
-        };
-
-        let import_ast = if let Some(ref path_key) = internal_path_opt {
-            let mut cache = STD_AST_CACHE.lock().unwrap();
-            if let Some(cached) = cache.get(path_key) {
-                cached.clone()
-            } else {
-                let mut p = Parser::new(raw_source);
-                let ast = match p.parse_all() {
-                    Ok(ast) => ast,
-                    Err(e) => {
-                        self.error(
-                            0,
-                            0,
-                            format!("syntax error in imported module '{}': {}", source, e),
-                        );
-                        return Value::Fun(Rc::new(Function {
-                            arity: 0,
-                            frame_size: 1,
-                            code: Rc::from([]),
-                        }));
-                    }
-                };
-                cache.insert(path_key.clone(), ast.clone());
-                ast
-            }
-        } else {
-            let mut p = Parser::new(raw_source);
-            match p.parse_all() {
-                Ok(ast) => ast,
-                Err(e) => {
-                    self.error(
-                        0,
-                        0,
-                        format!("syntax error in imported module '{}': {}", source, e),
-                    );
-                    return Value::Fun(Rc::new(Function {
-                        arity: 0,
-                        frame_size: 1,
-                        code: Rc::from([]),
-                    }));
-                }
+        if source.starts_with("@std") {
+            self.error(
+                0,
+                0,
+                format!("Standard library module not found: '{}'", source),
+            );
+            return Value::Fun(Rc::new(Function {
+                arity: 0,
+                frame_size: 1,
+                code: Rc::from([]),
+            }));
+        }
+        let full_path = self.source.join(&source);
+        let canonical_path = fs::canonicalize(&full_path).unwrap_or(full_path);
+        let path_str = canonical_path.to_str().unwrap().to_string();
+        let raw_source = match fs::read_to_string(&canonical_path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.error(0, 0, format!("failed to read import '{}': {}", path_str, e));
+                return Value::Fun(Rc::new(Function {
+                    arity: 0,
+                    frame_size: 1,
+                    code: Rc::from([]),
+                }));
             }
         };
+        let new_source_path = canonical_path.parent().unwrap().to_path_buf();
+
+        let mut p = Parser::new(raw_source);
+        let import_ast = match p.parse_all() {
+            Ok(ast) => ast,
+            Err(e) => {
+                self.error(
+                    0,
+                    0,
+                    format!("syntax error in imported module '{}': {}", source, e),
+                );
+                return Value::Fun(Rc::new(Function {
+                    arity: 0,
+                    frame_size: 1,
+                    code: Rc::from([]),
+                }));
+            }
+        };
+        self.collect_mutated_vars(&import_ast);
 
         let old_source = self.source.clone();
         self.source = new_source_path;
@@ -445,7 +800,15 @@ impl Compiler {
         });
 
         let top_level = self.current().top_level_names.clone();
+        let top_aliases = self.current().top_level_module_aliases.clone();
         for (name, reg) in top_level {
+            if let Some(mod_path_str) = top_aliases.get(&name)
+                && let Some((&mod_path, _)) = crate::std::std_registry()
+                    .modules
+                    .get_key_value(mod_path_str.as_str())
+            {
+                self.emit_load_std_module(reg, mod_path);
+            }
             let hash = Value::Hash(Value::String(name.into()).get_hash());
             let const_idx = self.get_or_add_constant(hash);
 
@@ -478,6 +841,7 @@ impl Compiler {
     }
 
     pub fn compile_all(&mut self, ast: Vec<Ast>) -> Result<Vec<IrOp>, Vec<Error>> {
+        self.collect_mutated_vars(&ast);
         for item in &ast {
             if let Ast::EnumDef { name, variants } = item {
                 if let Some(pos) = self.enums.iter().position(|e| e.name == *name) {
@@ -498,7 +862,6 @@ impl Compiler {
                 }
             }
         }
-
         for item in ast {
             if item != Ast::Ignore {
                 self.compile(item);
@@ -522,8 +885,58 @@ impl Compiler {
         match ast {
             Ast::Declare { name, value } => {
                 self.locate(&name);
+                self.current().clear_module_alias(&name);
                 if matches!(&*value, Ast::Import { .. }) || matches!(&*value, Ast::Dot { .. }) {
                     self.module_variables.insert(name.clone());
+                }
+                if let Ast::Import {
+                    import_type: ImportType::Regular,
+                    import_map: None,
+                    source,
+                    ..
+                } = &*value
+                    && let Some(mod_path) = crate::std::std_registry().resolve_import(source)
+                {
+                    if !self.any_std_field_mutated && !self.mutated_vars.contains(&name) {
+                        let spec = &crate::std::std_registry().modules[mod_path];
+                        let is_pure_parts = spec.natives.is_empty()
+                            && spec.constants.is_empty()
+                            && spec.submodules.is_empty()
+                            && spec.overlay_asset.is_some();
+                        if !is_pure_parts {
+                            self.current()
+                                .set_module_alias(name, mod_path.to_string());
+                            return 0;
+                        }
+                    }
+                    let address = self
+                        .current()
+                        .resolve_local(&name)
+                        .unwrap_or_else(|| self.current().add_local(name));
+                    self.emit_load_std_module(address, mod_path);
+                    self.current().next_free_register = self.current().local_count;
+                    return address;
+                }
+                if let Some(StdTarget::Module(mod_path)) = self.resolve_std_target(&value) {
+                    if !self.any_std_field_mutated && !self.mutated_vars.contains(&name) {
+                        let spec = &crate::std::std_registry().modules[mod_path];
+                        let is_pure_parts = spec.natives.is_empty()
+                            && spec.constants.is_empty()
+                            && spec.submodules.is_empty()
+                            && spec.overlay_asset.is_some();
+                        if !is_pure_parts {
+                            self.current()
+                                .set_module_alias(name, mod_path.to_string());
+                            return 0;
+                        }
+                    }
+                    let address = self
+                        .current()
+                        .resolve_local(&name)
+                        .unwrap_or_else(|| self.current().add_local(name));
+                    self.emit_load_std_module(address, mod_path);
+                    self.current().next_free_register = self.current().local_count;
+                    return address;
                 }
                 let address = self
                     .current()
@@ -624,6 +1037,11 @@ impl Compiler {
                 }
 
                 if let ParserValue::Ref(ref_val) = &val {
+                    if let Some(mod_path) = self.resolve_module_alias(ref_val) {
+                        let reg = self.next_free_address();
+                        self.emit_load_std_module(reg, mod_path);
+                        return reg;
+                    }
                     if let Some(reg) = self.current().resolve_local(ref_val) {
                         return reg;
                     }
@@ -640,17 +1058,10 @@ impl Compiler {
                         }
                     }
 
-                    if let Some(_std_func) = self.std.functions.iter().find(|f| f.name == ref_val) {
+                    if let Some(std_func) = self.lookup_global_native(ref_val).cloned() {
                         let reg = self.next_free_address();
-                        let hash =
-                            Value::Hash(Value::String(ref_val.to_string().into()).get_hash());
-                        let idx = self.get_or_add_constant(hash);
-
-                        self.add_inst(IrOp::LoadNative {
-                            dest: reg,
-                            src: idx,
-                        });
-
+                        let idx = self.get_or_add_constant(Value::NativeFun(std_func));
+                        self.add_inst(IrOp::LoadConst { dest: reg, idx });
                         return reg;
                     }
                 }
@@ -798,8 +1209,72 @@ impl Compiler {
             Ast::Return { value } => {
                 self.locate("return");
                 if self.contexts.len() > 1
+                    && let Ast::Call { what, args } = &*value
+                    && let Some(target) = self.resolve_std_target(what)
+                {
+                    match target {
+                        StdTarget::Native(native_fn) => {
+                            let mut compiled_args = vec![];
+                            for arg in args {
+                                compiled_args.push(self.compile(arg.clone()));
+                            }
+                            let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                            let return_adr = self.next_free_address();
+                            self.add_inst(IrOp::CallNative {
+                                dest: return_adr,
+                                idx,
+                                args: compiled_args,
+                            });
+                            self.add_inst(IrOp::Return { value: return_adr });
+                            return 0;
+                        }
+                        StdTarget::PartsFun(fun_idx) => {
+                            let caller = self.next_free_address();
+                            self.add_inst(IrOp::LoadFun {
+                                dest: caller,
+                                src: fun_idx,
+                            });
+                            let mut compiled_args = vec![];
+                            for arg in args {
+                                compiled_args.push(self.compile(arg.clone()));
+                            }
+                            self.add_inst(IrOp::TailCall {
+                                what: caller,
+                                args: compiled_args,
+                            });
+                            return 0;
+                        }
+                        StdTarget::Const(_) | StdTarget::Module(_) => {}
+                    }
+                }
+                if self.contexts.len() > 1
                     && let Ast::Call { what, args } = *value
                 {
+                    if let Ast::Value(ParserValue::Ref(ref fn_name)) = *what
+                        && self.current().resolve_local(fn_name).is_none()
+                        && !self
+                            .contexts
+                            .iter()
+                            .rev()
+                            .skip(1)
+                            .any(|ctx| ctx.top_level_names.contains_key(fn_name))
+                        && let Some(native_fn) = self.lookup_global_native(fn_name).cloned()
+                    {
+                        let mut compiled_args = vec![];
+                        for arg in args {
+                            compiled_args.push(self.compile(arg));
+                        }
+                        let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                        let return_adr = self.next_free_address();
+                        self.add_inst(IrOp::CallNative {
+                            dest: return_adr,
+                            idx,
+                            args: compiled_args,
+                        });
+                        self.add_inst(IrOp::Return { value: return_adr });
+                        return 0;
+                    }
+
                     let (caller, final_args) = if let Ast::Dot {
                         accessor,
                         access,
@@ -817,12 +1292,38 @@ impl Compiler {
                             false
                         } else if let Ast::Value(ParserValue::Ref(ref name)) = *access {
                             self.current().resolve_local(name).is_some()
-                                || self.std.functions.iter().any(|f| f.name == name)
+                                || self.lookup_global_native(name).is_some()
                         } else {
                             false
                         };
 
                         if is_ufcs {
+                            if let Ast::Value(ParserValue::Ref(ref name)) = *access
+                                && self.current().resolve_local(name).is_none()
+                                && !self
+                                    .contexts
+                                    .iter()
+                                    .rev()
+                                    .skip(1)
+                                    .any(|ctx| ctx.top_level_names.contains_key(name))
+                                && let Some(native_fn) = self.lookup_global_native(name).cloned()
+                            {
+                                let mut new_args = vec![*accessor];
+                                new_args.extend(args);
+                                let mut compiled_args = vec![];
+                                for arg in new_args {
+                                    compiled_args.push(self.compile(arg));
+                                }
+                                let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                                let return_adr = self.next_free_address();
+                                self.add_inst(IrOp::CallNative {
+                                    dest: return_adr,
+                                    idx,
+                                    args: compiled_args,
+                                });
+                                self.add_inst(IrOp::Return { value: return_adr });
+                                return 0;
+                            }
                             let mut new_args = vec![*accessor];
                             new_args.extend(args);
                             (self.compile(*access), new_args)
@@ -853,6 +1354,70 @@ impl Compiler {
                 if let Ast::Value(ParserValue::Ref(ref fn_name)) = *what {
                     self.locate(fn_name);
                 }
+                if let Some(target) = self.resolve_std_target(&what) {
+                    match target {
+                        StdTarget::Native(native_fn) => {
+                            let mut compiled_args = vec![];
+                            for arg in args {
+                                compiled_args.push(self.compile(arg));
+                            }
+                            let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                            let return_adr = self.next_free_address();
+                            self.add_inst(IrOp::CallNative {
+                                dest: return_adr,
+                                idx,
+                                args: compiled_args,
+                            });
+                            self.current().next_free_register = return_adr + 1;
+                            return return_adr;
+                        }
+                        StdTarget::PartsFun(fun_idx) => {
+                            let caller = self.next_free_address();
+                            self.add_inst(IrOp::LoadFun {
+                                dest: caller,
+                                src: fun_idx,
+                            });
+                            let mut compiled_args = vec![];
+                            for arg in args {
+                                compiled_args.push(self.compile(arg));
+                            }
+                            let return_adr = self.next_free_address();
+                            self.add_inst(IrOp::Call {
+                                dest: return_adr,
+                                what: caller,
+                                args: compiled_args,
+                            });
+                            self.current().next_free_register = return_adr + 1;
+                            return return_adr;
+                        }
+                        StdTarget::Const(_) | StdTarget::Module(_) => {}
+                    }
+                }
+                if let Ast::Value(ParserValue::Ref(ref fn_name)) = *what
+                    && self.current().resolve_local(fn_name).is_none()
+                    && !self
+                        .contexts
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .any(|ctx| ctx.top_level_names.contains_key(fn_name))
+                    && let Some(native_fn) = self.lookup_global_native(fn_name).cloned()
+                {
+                    let mut compiled_args = vec![];
+                    for arg in args {
+                        compiled_args.push(self.compile(arg));
+                    }
+                    let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                    let return_adr = self.next_free_address();
+                    self.add_inst(IrOp::CallNative {
+                        dest: return_adr,
+                        idx,
+                        args: compiled_args,
+                    });
+                    self.current().next_free_register = return_adr + 1;
+                    return return_adr;
+                }
+
                 let (caller, final_args) = if let Ast::Dot {
                     accessor,
                     access,
@@ -868,12 +1433,38 @@ impl Compiler {
                         false
                     } else if let Ast::Value(ParserValue::Ref(ref name)) = *access {
                         self.current().resolve_local(name).is_some()
-                            || self.std.functions.iter().any(|f| f.name == name)
+                            || self.lookup_global_native(name).is_some()
                     } else {
                         false
                     };
 
                     if is_ufcs {
+                        if let Ast::Value(ParserValue::Ref(ref name)) = *access
+                            && self.current().resolve_local(name).is_none()
+                            && !self
+                                .contexts
+                                .iter()
+                                .rev()
+                                .skip(1)
+                                .any(|ctx| ctx.top_level_names.contains_key(name))
+                            && let Some(native_fn) = self.lookup_global_native(name).cloned()
+                        {
+                            let mut new_args = vec![*accessor];
+                            new_args.extend(args);
+                            let mut compiled_args = vec![];
+                            for arg in new_args {
+                                compiled_args.push(self.compile(arg));
+                            }
+                            let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                            let return_adr = self.next_free_address();
+                            self.add_inst(IrOp::CallNative {
+                                dest: return_adr,
+                                idx,
+                                args: compiled_args,
+                            });
+                            self.current().next_free_register = return_adr + 1;
+                            return return_adr;
+                        }
                         let mut new_args = vec![*accessor];
                         new_args.extend(args);
                         (self.compile(*access), new_args)
@@ -1107,9 +1698,36 @@ impl Compiler {
                         value,
                     });
                 }
+                let dot_ast = Ast::Dot {
+                    accessor: accessor.clone(),
+                    access: access.clone(),
+                    resolve,
+                };
+                if let Some(target) = self.resolve_std_target(&dot_ast) {
+                    let reg = self.next_free_address();
+                    match target {
+                        StdTarget::Module(mod_path) => {
+                            self.emit_load_std_module(reg, mod_path);
+                        }
+                        StdTarget::Native(native_fn) => {
+                            let idx = self.get_or_add_constant(Value::NativeFun(native_fn));
+                            self.add_inst(IrOp::LoadConst { dest: reg, idx });
+                        }
+                        StdTarget::Const(const_val) => {
+                            self.emit_std_const(reg, const_val);
+                        }
+                        StdTarget::PartsFun(fun_idx) => {
+                            self.add_inst(IrOp::LoadFun {
+                                dest: reg,
+                                src: fun_idx,
+                            });
+                        }
+                    }
+                    self.current().next_free_register = reg + 1;
+                    return reg;
+                }
 
                 let compiled_accessor = self.compile(*accessor);
-
                 if resolve {
                     let compiled_access = self.compile(*access);
                     let reg = self.next_free_address();
@@ -1290,6 +1908,55 @@ impl Compiler {
             } => {
                 if import_type == ImportType::Syntax || import_type == ImportType::Translation {
                     return 0;
+                }
+
+                if let Some(mod_path) = crate::std::std_registry().resolve_import(&source) {
+                    if let Some(map) = import_map {
+                        let mut mod_reg_opt = None;
+                        for name in map {
+                            let reg = self.current().add_local(name.clone());
+                            let spec = &crate::std::std_registry().modules[mod_path];
+                            if let Some(&sub_mod) = spec.submodules.get(name.as_str()) {
+                                self.emit_load_std_module(reg, sub_mod);
+                            } else if let Some(native_fn) = spec.natives.get(name.as_str()) {
+                                let idx =
+                                    self.get_or_add_constant(Value::NativeFun(native_fn.clone()));
+                                self.add_inst(IrOp::LoadConst { dest: reg, idx });
+                            } else if let Some(const_val) = spec.constants.get(name.as_str()) {
+                                self.emit_std_const(reg, const_val.clone());
+                            } else if let Some(asset) = spec.overlay_asset
+                                && let Some(fun_idx) =
+                                    self.try_extract_overlay_fun(mod_path, asset, &name)
+                            {
+                                self.add_inst(IrOp::LoadFun {
+                                    dest: reg,
+                                    src: fun_idx,
+                                });
+                            } else {
+                                let mod_reg = match mod_reg_opt {
+                                    Some(r) => r,
+                                    None => {
+                                        let r = self.next_free_address();
+                                        self.emit_load_std_module(r, mod_path);
+                                        mod_reg_opt = Some(r);
+                                        r
+                                    }
+                                };
+                                let hash = Value::Hash(Value::String(name.into()).get_hash());
+                                let hash_idx = self.get_or_add_constant(hash);
+                                self.add_inst(IrOp::GetProperty {
+                                    dest: reg,
+                                    obj: mod_reg,
+                                    key: hash_idx,
+                                });
+                            }
+                        }
+                        return 0;
+                    }
+
+                    let res_reg = self.next_free_address();
+                    self.emit_load_std_module(res_reg, mod_path);
+                    return res_reg;
                 }
 
                 let module_fun = self.compile_module(source);
@@ -1534,7 +2201,7 @@ impl Compiler {
             ParserValue::Bool(bol) => Value::Bool(bol),
             ParserValue::String(string) => Value::String(string.into()),
             ParserValue::Ref(reference) => {
-                if let Some(native) = self.std.functions.iter().find(|f| f.name == reference) {
+                if let Some(native) = self.lookup_global_native(&reference) {
                     return Value::NativeFun(native.clone());
                 }
                 Value::Ref(reference.into())

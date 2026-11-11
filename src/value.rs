@@ -83,10 +83,10 @@ impl Hash for Value {
                 let ptr = Rc::as_ptr(fun) as usize;
                 ptr.hash(state);
             }
-            Value::NativeFun(_) => {
-                state.write_u8(4);
-                let ptr = self as *const _ as usize;
-                ptr.hash(state);
+            Value::NativeFun(f) => {
+                state.write_u8(9);
+                f.name.hash(state);
+                f.arity.hash(state);
             }
             Value::Hash(v) => {
                 state.write_u8(5);
@@ -518,11 +518,13 @@ impl Value {
                     let name_bytes = &raw[idx..idx + len];
                     idx += len;
 
-                    let std = crate::value::StdDefinition::get_core();
-                    let native = std
-                        .functions
-                        .into_iter()
-                        .find(|f| f.name.as_bytes() == name_bytes)
+                    let native = crate::std::core_any_by_bytes(name_bytes)
+                        .cloned()
+                        .or_else(|| {
+                            crate::std::extra_natives_snapshot()
+                                .into_iter()
+                                .find(|f| f.name.as_bytes() == name_bytes)
+                        })
                         .unwrap_or_else(|| panic!("Missing native function"));
 
                     values.push(Value::NativeFun(native));
