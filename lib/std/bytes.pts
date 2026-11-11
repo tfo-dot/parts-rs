@@ -28,5 +28,19 @@ return |>
     get_u64_be: __bytes_get_u64_be,
     get_u64_le: __bytes_get_u64_le,
     set_u64_be: __bytes_set_u64_be,
-    set_u64_le: __bytes_set_u64_le
+    set_u64_le: __bytes_set_u64_le,
+    pad: fun(buf, alignment) {
+        let blen = __bytes_len(buf);
+        let rem = blen % alignment;
+        if rem > 0 {
+            let pad_count = alignment - rem;
+            let p = 0;
+            for p < pad_count {
+                __bytes_push(buf, 0);
+                p = p + 1;
+            }
+        }
+        
+        return Option::None;
+    }
 <|;

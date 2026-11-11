@@ -896,7 +896,10 @@ impl VM {
             Value::Fun(_) => true,
             Value::NativeFun(_) => true,
             Value::Object(items) => !items.borrow().is_empty(),
-            Value::EnumDefinition(_) | Value::EnumField { .. } => true,
+            Value::EnumDefinition(_) => true,
+            Value::EnumField { const_idx, tag, .. } => {
+                *const_idx == 0 && *tag == 0 || *const_idx == 1 && *tag == 0
+            }
             Value::Bytes(bytes) => !bytes.borrow().is_empty(),
             Value::BoundMethod { .. } => true,
         }

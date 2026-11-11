@@ -160,11 +160,12 @@ println("Buffer length: ", buf.len());
 | Category | Operators | Details |
 | :--- | :--- | :--- |
 | **Arithmetic** | `+`, `-`, `*`, `/`, `%` | Arithmetic operations on `Int` and `Double`. Modulo `%` requires integers. |
-| **Bitwise** | `&`, `|`, `^`, `<<`, `>>` | Bitwise operations on `Int`, `Double` (coerced), and `Bool`. |
-| **Logical** | `&`, `|` | Single ampersand/pipe serve as logical and/or. |
+| **Bitwise** | ` ^`, `<<`, `>>` | Bitwise operations on `Int`, `Double` (coerced), and `Bool`. |
 | **Comparison** | `==`, `<`, `>`, `<=`, `>=` | Structural comparison across all primitives and tagged enum variants. |
 | **Assignment** | `=` | Assigns to variables (`x = 1`) or object properties (`obj.x = 1`). |
 | **Accessors** | `.`, `[...]` | Static property dot access or dynamic array/map indexing. |
+
+For logic operations, you can use `+` and `*` with their mathematical meaning (`+` is equal to `or`, `*` is equal to `and`). For short-circuited operations, use the `||` and `&&` operators.
 
 ---
 
@@ -592,19 +593,13 @@ std.net_close(sock);
 
 ## 14. Language Quirks & Idiosyncrasies
 
-### 1. Comments are Bare String Literals
-Parts has no comment tokens (`//`, `/* */`, `#`). Standalone string expressions (`"..."` or `` `...` ``) at the statement level are ignored by the parser and emitted as no-ops.
-
-### 2. Object Delimiters (`|> ... <|`)
+### 1. Object Delimiters (`|> ... <|`)
 Object literals use pipeline brackets `|>` and `<|` to prevent syntax ambiguity with code blocks and match arms `{ ... }`.
 
-### 3. `for` Condition is a `while` Loop
+### 2. `for` Condition is a `while` Loop
 The syntax `for <condition> { ... }` acts as a while loop. Iteration over collections requires `for <var> in <iterable> { ... }`.
 
-### 4. Single `&` and `|` for Logical Operations
-Parts does not use `&&` or `||`. Instead, single ampersand `&` and pipe `|` are used for both bitwise and logical operations (e.g., `(a > 0) & (b > 0)`) or mathematical operators: `*` and `+` can be used instead (e.g., `(a > 0) * (b > 0)`).
-
-### 5. Falsy Values Model
+### 3. Falsy Values Model
 In conditional statements (`if`, `for`, `JumpNot`), only the following values evaluate to **falsy**:
 - `Int(0)`
 - `Double(0.0)`
@@ -612,23 +607,26 @@ In conditional statements (`if`, `for`, `JumpNot`), only the following values ev
 - `String("")` (empty string)
 - `Object(|><|)` (empty object)
 - `Bytes(<0 bytes>)` (empty byte buffer)
+- `Error::Err` (built-in error)
+- `Option::None` (built-in option)
+
 
 All other values (including populated objects, functions, and active enum instances) evaluate to **truthy**.
 
-### 6. UFCS Resolution Priority
+### 4. UFCS Resolution Priority
 When calling `receiver.method(...)`, the compiler first looks up whether `method` is a local function or registered native function. If found, it compiles as `method(receiver, ...)`. Otherwise, it falls back to dynamic property retrieval on the object.
 
-### 7. 64-Bit Integer Key Hashing
+### 5. 64-Bit Integer Key Hashing
 All object keys and struct fields are hashed into `u64` via `FxHash`/`xxh3`. Property lookups operate directly on 64-bit integer hashes in bytecode.
 
-### 8. Scope Register Recycling
+### 6. Scope Register Recycling
 Each VM call frame has 256 registers. Variables declared in inner blocks `{ let x = 1; }` release their register addresses upon block exit, allowing subsequent allocations to reuse those register slots.
 
-### 9. First-Class Bytecode Enum Opcodes
+### 7. First-Class Bytecode Enum Opcodes
 Enums are not plain dictionary maps. They are first-class runtime entities emitted as `ConstEnum` (constructs tagged variant with args) and matched with `MatchEnum` (tag checking opcode).
 
-### 10. Embedded Virtual Filesystem (`@std/...`)
+### 8. Embedded Virtual Filesystem (`@std/...`)
 Paths prefixed with `@std/` are embedded inside the compiled Rust binary with `rust-embed` and resolved entirely in memory.
 
-### 11. XXH3 Bytecode Caching (`.ptc`)
+### 9. XXH3 Bytecode Caching (`.ptc`)
 When executed with `-c` / `--cached`, Parts generates a `.ptc` cache file containing a 32-byte header (`\x7fPTS`, version, XXH3 source hash, payload sizes) plus the serialized constant pool and bytecode. If the source file hash matches, compilation is skipped, achieving sub-millisecond execution.
